@@ -10,7 +10,8 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "dsh-mcp-manager": "install.mjs"
+    "dsh-mcp-manager": "install.mjs",
+    "dsh-mcp-manager-uninstall": "uninstall.mjs"
   },
   "files": [
     "lib",

@@ -34,17 +34,27 @@ The loader entry is the single composition point for both halves — no changes 
 
 ## Install (any platform)
 
-**Quickest — one npx command (requires Node.js >= 18):**
+**Quickest — one command, via npm (requires Node.js >= 18):**
+
 ```bash
-# from npm (recommended)
+# Option A — one-shot with npx, nothing to install
 npx -y @xxxyz/dsh-mcp-manager
 
-# or directly from GitHub (no npm account needed)
+# Option B — global npm install, then run the command any time
+npm i -g @xxxyz/dsh-mcp-manager
+dsh-mcp-manager                  # install the plugin
+dsh-mcp-manager-uninstall        # uninstall the plugin
+npm i -g @xxxyz/dsh-mcp-manager@latest   # upgrade
+```
+
+All flags pass through in both options: `npx -y @xxxyz/dsh-mcp-manager --dsh-home /path/.dsh --profile web --repair --port 3080`.
+
+> npm package name: `@xxxyz/dsh-mcp-manager` (the bare name `dsh-mcp-manager` is taken on npm by an unrelated package). The deployed plugin name is still `dsh-mcp-manager` — npm/npx is only the delivery channel; the installer copies the files to the same fixed locations below.
+
+**No-npm alternative — directly from GitHub:**
+```bash
 npx -y github:xxxyz/DeepSeekHarness-MCP-Manager
 ```
-All flags pass through: `npx -y @xxxyz/dsh-mcp-manager --dsh-home /path/.dsh --profile web --repair --port 3080`.
-
-> npm package name: `@xxxyz/dsh-mcp-manager` (the bare name `dsh-mcp-manager` is taken on npm by an unrelated package). The deployed plugin name is still `dsh-mcp-manager` — npx is only the delivery channel; the installer copies the files to the same fixed locations below.
 
 **Alternative — run the installer scripts from a source checkout** (all installers share one cross-platform logic file, `install.mjs`). Install steps:
 
@@ -71,9 +81,10 @@ node dsh-mcp-manager/install.mjs [--dsh-home <path>] [--profile <name>] [--port 
 
 Then **restart DSH** and open **Settings → MCP 管理**. The four `mcp_manager_*` tools become callable by the model after that restart.
 
-Uninstall (same three ways):
-```powershell
-.\dsh-mcp-manager\uninstall.ps1      # or: ./uninstall.sh   or: node uninstall.mjs [--dsh-home <path>] [--profile <name>]
+Uninstall (any method):
+```bash
+dsh-mcp-manager-uninstall          # if installed via npm -g
+# or: .\dsh-mcp-manager\uninstall.ps1 | ./uninstall.sh | node uninstall.mjs [--dsh-home <path>] [--profile <name>]
 ```
 then restart DSH. Uninstall removes the deployed copy, the `local-packages` true source, and the loader row.
 
