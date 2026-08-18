@@ -2,6 +2,8 @@
 
 [中文](README.zh-CN.md) · [English](README.md)
 
+![dsh-mcp-manager 设置页图例](show.png)
+
 一个给 DeepSeek Harness (DSH) 用的**常驻 MCP 服务管理插件**——**loader 插件**（不是动态会话插件），安装后 DSH 重启、升级依然存在。
 
 按 DSH 官方插件开发标准实现（参考官方文档：[第一个插件](https://deepseek-harness.github.io/deepseek-harness/develop/basic/)、[开发一个工具](https://deepseek-harness.github.io/deepseek-harness/develop/basic/tool)）：
