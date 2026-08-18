@@ -38,7 +38,21 @@
 
 ## 安装（任选一种方式）
 
-安装脚本会：
+### 方式 0：npx 一条命令（最快捷，需要 Node.js >= 18）
+
+```bash
+# 从 npm 安装（推荐）
+npx -y @xxxyz/dsh-mcp-manager
+
+# 或直接从 GitHub 安装（无需 npm 账号）
+npx -y github:xxxyz/DeepSeekHarness-MCP-Manager
+```
+
+所有参数照常透传：`npx -y @xxxyz/dsh-mcp-manager --dsh-home /path/.dsh --profile web --repair --port 3080`。
+
+> npm 包名是 `@xxxyz/dsh-mcp-manager`（裸名 `dsh-mcp-manager` 在 npm 上已被无关插件占用）。插件部署名仍是 `dsh-mcp-manager`——npx 只是配送渠道，安装器会把文件复制到下方同样的固定位置。
+
+以上所有方式实际执行的是同样的三个步骤（幂等，可重复运行）：
 
 1. 复制包到 `<DSH主目录>/local-packages/dsh-mcp-manager`（真源备份，DSH 升级不会动它）；
 2. 复制到 `<DSH主目录>/profiles/node_modules/dsh-mcp-manager`（**普通复制而非软链接**——软链接会让 Node ESM 按真实路径解析时找不到 `@deepseek-ai/dsh-tools`）；

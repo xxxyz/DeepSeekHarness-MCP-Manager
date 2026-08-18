@@ -308,7 +308,13 @@ async function main() {
   const profileDir = path.join(dshHome, 'profiles', opts.profile)
   const projectPatch = path.join(profileDir, 'cordis.patch.yml')
 
+  // When run through npx (npm cache or a `node_modules` install), the package
+  // lives in a temp directory — everything still works (the source is copied
+  // from SCRIPT_DIR), we just say so for clarity.
+  const runViaNpx = /node_modules[\\/]/.test(SCRIPT_DIR)
+
   log(`操作系统: ${process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux'}`)
+  if (runViaNpx) log('运行来源: npx（npm 缓存 / GitHub 直拉的临时安装）')
   log(`DSH 主目录: ${dshHome}`)
   log(`profile: ${opts.profile}`)
   if (!fs.existsSync(path.join(dshHome, 'profiles')))

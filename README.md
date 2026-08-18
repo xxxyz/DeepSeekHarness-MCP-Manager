@@ -34,7 +34,19 @@ The loader entry is the single composition point for both halves — no changes 
 
 ## Install (any platform)
 
-All installers share one cross-platform logic file (`install.mjs`). Install steps:
+**Quickest — one npx command (requires Node.js >= 18):**
+```bash
+# from npm (recommended)
+npx -y @xxxyz/dsh-mcp-manager
+
+# or directly from GitHub (no npm account needed)
+npx -y github:xxxyz/DeepSeekHarness-MCP-Manager
+```
+All flags pass through: `npx -y @xxxyz/dsh-mcp-manager --dsh-home /path/.dsh --profile web --repair --port 3080`.
+
+> npm package name: `@xxxyz/dsh-mcp-manager` (the bare name `dsh-mcp-manager` is taken on npm by an unrelated package). The deployed plugin name is still `dsh-mcp-manager` — npx is only the delivery channel; the installer copies the files to the same fixed locations below.
+
+**Alternative — run the installer scripts from a source checkout** (all installers share one cross-platform logic file, `install.mjs`). Install steps:
 
 1. copy the package to `<dshHome>/local-packages/dsh-mcp-manager` (a true source kept outside `node_modules`, so DSH upgrades never touch it)
 2. copy it into `<dshHome>/profiles/node_modules/dsh-mcp-manager` (a plain copy on purpose — a symlink would make Node ESM resolve the plugin's realpath where `@deepseek-ai/dsh-tools` cannot be found)

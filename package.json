@@ -1,7 +1,7 @@
 {
-  "name": "dsh-mcp-manager",
+  "name": "@xxxyz/dsh-mcp-manager",
   "version": "2.0.0",
-  "description": "DSH-standard MCP manager plugin: Settings UI + HTTP API + model-facing mcp_manager_* tools. Composed as a loader entry, survives restarts.",
+  "description": "DSH-standard MCP manager plugin: Settings UI + HTTP API + model-facing mcp_manager_* tools. Composed as a loader entry, survives restarts. Install via npx, PowerShell, bash or node.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -9,8 +9,44 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
+  "bin": {
+    "dsh-mcp-manager": "install.mjs"
+  },
+  "files": [
+    "lib",
+    "install.mjs",
+    "uninstall.mjs",
+    "install.ps1",
+    "install.sh",
+    "uninstall.ps1",
+    "uninstall.sh",
+    "README.md",
+    "README.zh-CN.md",
+    "安装方式.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "mcp",
+    "mcp-server",
+    "plugin",
+    "cordis"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xxxyz/DeepSeekHarness-MCP-Manager.git"
+  },
+  "homepage": "https://github.com/xxxyz/DeepSeekHarness-MCP-Manager",
+  "bugs": {
+    "url": "https://github.com/xxxyz/DeepSeekHarness-MCP-Manager/issues"
   },
   "dsh": {
     "client": {
