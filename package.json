@@ -29,7 +29,8 @@
     "node": ">=18"
   },
   "publishConfig": {
-    "registry": "https://registry.npmjs.org"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
