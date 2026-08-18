@@ -1,5 +1,7 @@
 # dsh-mcp-manager
 
+[English](README.md) · [中文](README.zh-CN.md)
+
 Durable MCP server manager for DeepSeek Harness (DSH) — a **composed loader plugin** (not a dynamic session plugin), so it survives DSH restarts and upgrades.
 
 Built to the DSH plugin development standard (see the official docs: [第一个插件](https://deepseek-harness.github.io/deepseek-harness/develop/basic/), [开发一个工具](https://deepseek-harness.github.io/deepseek-harness/develop/basic/tool)):
