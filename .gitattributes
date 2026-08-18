@@ -1,0 +1,5 @@
+# Cross-platform scripts must stay LF everywhere (CRLF breaks bash / node shebang)
+* text=auto
+*.sh text eol=lf
+*.mjs text eol=lf
+*.ps1 text eol=lf
