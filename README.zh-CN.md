@@ -1,180 +1,193 @@
-# dsh-mcp-manager（DSH MCP 服务管理器）
+# dsh-mcp-manager
 
-[中文](README.zh-CN.md) · [English](README.md)
+<!-- Hero -->
+<div align="center">
+  <b style="font-size: 1.15em;">DeepSeek Harness 的 MCP 服务管理器：装没装、连没连、一页管完。</b><br /><br />
+  <code>服务器列表</code> <code>新增 / 编辑 / 删除</code> <code>启用 / 停用</code> <code>重启</code> <code>工具数健康</code> <code>JSON 导出 / 导入</code><br />
+  <code>4 个模型工具</code> <code>HTTP API</code> <code>npx / npm / dsh plugin / 脚本</code><br /><br />
+  <b>设置 → MCP 管理</b> 管理项目级与全局 <code>cordis.patch.yml</code> 中的 <code>@deepseek-ai/dsh-mcp-client</code> 行——<br />
+  无需再手改配置文件，所有修改即改即生效（HMR 热应用），重启、升级后依然存在。
+</div>
 
-![dsh-mcp-manager 设置页图例](show.png)
+<div align="center">
 
-一个给 DeepSeek Harness (DSH) 用的**常驻 MCP 服务管理插件**——**loader 插件**（不是动态会话插件），安装后 DSH 重启、升级依然存在。
+[![npm version](https://img.shields.io/npm/v/@xxxyz/dsh-mcp-manager?logo=npm&color=cb3837)](https://www.npmjs.com/package/@xxxyz/dsh-mcp-manager)
+[![License](https://img.shields.io/github/license/xxxyz/DeepSeekHarness-MCP-Manager?color=blue)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js)](package.json)
+[![GitHub](https://img.shields.io/badge/GitHub-xxxyz%2FDeepSeekHarness--MCP--Manager-181717?logo=github)](https://github.com/xxxyz/DeepSeekHarness-MCP-Manager)
 
-按 DSH 官方插件开发标准实现（参考官方文档：[第一个插件](https://deepseek-harness.github.io/deepseek-harness/develop/basic/)、[开发一个工具](https://deepseek-harness.github.io/deepseek-harness/develop/basic/tool)）：
+</div>
 
-- **对象形态 Cordis 插件**（`export default { name, inject, apply }`）
-- 必需服务在 `inject` 中声明——框架保证 `apply` 前已就绪，服务消失会自动重载插件（这是插件跨 DSH 升级存活的机制）
-- 面向模型的能力用 **`ctx.tools.register(defineTool(...))`** 注册：`mcp_manager_list`、`mcp_manager_set_enabled`、`mcp_manager_restart`、`mcp_manager_add`
-- 面向 UI 的能力用 **`webServer` 精确路由**（`POST /dsh-mcp-manager/api`），由客户端半区消费
+<div align="center">
+  🌏 <a href="./README.zh-CN.md"><b>中文</b></a> · <a href="./README.md">English</a>
+</div>
 
-功能入口：**设置 → MCP 管理**。
+<br />
 
-功能：
+<p align="center"><img src="show.png" alt="dsh-mcp-manager 设置 → MCP 管理 页面图例" /></p>
 
-- 宿主半区管理 `@deepseek-ai/dsh-mcp-client` 行：
-  - **项目级** → `~/.dsh/profiles/<profile>/cordis.patch.yml`
-  - **全局** → `~/.dsh/cordis.patch.yml`
-  - 新增 / 编辑 / 启用 / 禁用 / 重启 / 删除，工具数健康检查，JSON 导出/导入，按文件写锁
-- 修改经 HMR 实时生效；重启 DSH 后由 Loader 自动加载
+## ✨ 功能一览
 
-## 工作原理
+- **📋 服务器列表**：列出所有已配置的 MCP 服务器（`@deepseek-ai/dsh-mcp-client` 实例）——`serverName`、传输方式（`stdio` / `streamable-http`）、URL / 命令、启用状态、loader 实时加载阶段、已注册工具数
+- **➕ 新增 / ➖ 删除**：表单添加 MCP 服务器（支持 env / headers / args），带格式与重名校验；一键删除
+- **🔌 启用 / 停用**：随时切换，工具随之热连接 / 热断开
+- **🔄 重启**：disable + re-enable，自动重连并重新同步工具
+- **💾 持久化**：写入**项目级**（`profiles/<profile>/cordis.patch.yml`）或**全局**（`~/.dsh/cordis.patch.yml`），重启后保留；页面底部显示文件路径
+- **🩺 健康检查**：每台服务器实时工具数与 loader 阶段，异常一目了然
+- **📦 备份 / 恢复**：JSON 导出 / 导入，合并新增、已存在自动跳过
+- **🤖 模型工具**：宿主注册 4 个 `mcp_manager_*` 工具，模型可直接查询与操作 MCP 服务
+- **🌐 HTTP API**：`POST /dsh-mcp-manager/api`（JSON `{op, args}` → `{ok, ...}`），供客户端与脚本调用
+- **📦 跨平台安装**：Windows / macOS / Linux 一条命令（npx / npm / `dsh plugin` / 脚本）
 
-| 部分 | 文件 | 作用 |
-|---|---|---|
-| 宿主插件源码 | `src/index.ts` | TypeScript 源码（官方文档的插件形态）；**`npm run build`**（tsc）编译 |
-| 宿主插件（编译产物） | `lib/index.js`（`main`） | Cordis 对象插件：patch 文件 CRUD + 4 个模型工具 + `webServer` 精确路由 `/dsh-mcp-manager/api`（JSON `{op, args}` → `{ok, ...}`） |
-| 客户端 bundle | `lib/client.js`（`exports["./client"]` + `dsh.client`） | 浏览器模块：注册设置页；通过 `fetch('/dsh-mcp-manager/api')` 调用宿主 |
-| loader 行 | 追加到 profile 的 `cordis.patch.yml` | 组合宿主条目；client-modules 服务扫描启用的条目并下发客户端 bundle |
+## 🚀 安装
 
-> **loader 行必须是 `insert` 块形式**：DSH 的 patch 方言（`applyEntryPatches`）把普通 `- id: x` 行当作"对已存在条目的配置覆盖"，目标不存在时会**静默跳过**——新增插件必须用 `- insert:` 形式（与插件自身管理 MCP 服务行一致）。
+**前置**：DSH 已装好（`dsh web` 能正常运行），Node.js ≥ 18。
 
-包本身**纯 JS、零依赖、跨平台**（路径分隔符运行时检测），Windows / macOS / Linux 均支持。构建（`npm run build`）需要 devDependencies（typescript、`@deepseek-ai/cordis`、`@deepseek-ai/dsh-tools`、`@types/node`）；发布/安装的包**不需要**任何依赖。
+### 方式一 · npx 一条命令（推荐）
 
-## 安装（任选一种方式）
-
-### 方式 0：npx 一条命令（免安装，最快捷，需要 Node.js >= 18）
-
-```bash
-# 从 npm 临时运行（推荐，无需安装）
+```sh
 npx -y @xxxyz/dsh-mcp-manager
-
-# 或直接从 GitHub 运行（无需 npm 账号）
-npx -y github:xxxyz/DeepSeekHarness-MCP-Manager
 ```
 
 所有参数照常透传：`npx -y @xxxyz/dsh-mcp-manager --dsh-home /path/.dsh --profile web --repair --port 3080`。
 
-> npm 包名是 `@xxxyz/dsh-mcp-manager`（裸名 `dsh-mcp-manager` 在 npm 上已被无关插件占用）。插件部署名仍是 `dsh-mcp-manager`——npx 只是配送渠道，安装器会把文件复制到下方同样的固定位置。
+### 方式二 · npm 全局安装（适合经常使用）
 
-### 方式 1：npm 全局安装（适合经常使用）
-
-```bash
-# 安装插件
+```sh
 npm i -g @xxxyz/dsh-mcp-manager
-dsh-mcp-manager                  # 安装插件（参数同 npx）
+dsh-mcp-manager                  # 安装插件
 dsh-mcp-manager-uninstall        # 卸载插件
-# 升级插件
-npm i -g @xxxyz/dsh-mcp-manager@latest
+npm i -g @xxxyz/dsh-mcp-manager@latest   # 升级
 ```
 
-### 方式 2：Windows（PowerShell）
+### 方式三 · dsh 命令安装（bundle 方式）
+
+```sh
+dsh plugin --profile web add @xxxyz/dsh-mcp-manager
+# 或 GitHub 源（构建产物 lib/ 已入库，无需本地构建）
+dsh plugin --profile web add github:xxxyz/DeepSeekHarness-MCP-Manager
+```
+
+### 方式四 · 免 npm 账号：GitHub 直拉
+
+```sh
+npx -y github:xxxyz/DeepSeekHarness-MCP-Manager
+```
+
+<details>
+<summary><b>脚本安装</b>（源码方式：下载仓库后执行，幂等）</summary>
+
+**Windows（PowerShell）**：
 
 ```powershell
-# 默认使用 ~/.dsh 和 web profile
-.\dsh-mcp-manager\install.ps1
-
-# 指定 DSH 主目录 / profile
+.\dsh-mcp-manager\install.ps1                     # 默认 ~/.dsh + web profile
 .\dsh-mcp-manager\install.ps1 -DshHome D:\path\.dsh -Profile web
-
-# 修复模式（见"DSH 升级后：--repair"）
-.\dsh-mcp-manager\install.ps1 -Repair -Port 3080
 ```
 
-### 方式 3：macOS / Linux（bash）
+**macOS / Linux（bash）**（无执行权限先 `chmod +x dsh-mcp-manager/install.sh`）：
 
-```bash
-# 默认使用 ~/.dsh 和 web profile
-./dsh-mcp-manager/install.sh
-
-# 指定 DSH 主目录 / profile
+```sh
+./dsh-mcp-manager/install.sh                      # 默认 ~/.dsh + web profile
 ./dsh-mcp-manager/install.sh --dsh-home /path/.dsh --profile web
-
-# 修复模式
-./dsh-mcp-manager/install.sh --repair --port 3080
 ```
 
-> 若 `install.sh` 没有执行权限，先运行：`chmod +x dsh-mcp-manager/install.sh`
+**任何平台直接运行**：
 
-### 方式 4：任何平台直接运行（推荐，最通用）
-
-```bash
-node dsh-mcp-manager/install.mjs                       # 默认 ~/.dsh + web
-node dsh-mcp-manager/install.mjs --dsh-home /path/.dsh --profile web
-node dsh-mcp-manager/install.mjs --repair --port 3080  # 修复模式
+```sh
+node dsh-mcp-manager/install.mjs [--dsh-home <path>] [--profile <name>] [--port <n>] [--repair] [--skip-patch]
 ```
 
-### 参数说明
+安装脚本会：① 复制到 `local-packages/`（真源备份，DSH 升级不动它）② 复制到 `profiles/node_modules/`（普通复制而非软链接，保证 ESM 能解析 `@deepseek-ai/dsh-tools`）③ 幂等追加 loader 行（insert 块）。
 
-| 参数 | 说明 | 默认值 |
-|---|---|---|
-| `--dsh-home` / `-DshHome` | DSH 主目录（含 `profiles`、`settings.yaml` 的目录） | `$DSH_HOME` 环境变量，否则 `~/.dsh` |
-| `--profile` / `-Profile` | 要安装到的 profile 名 | `web` |
-| `--port` / `-Port` | 修复模式下探测 API 的端口（= DSH Web 端口） | `3080` |
-| `--repair` / `-Repair` | 修复模式：重新部署 + 递增 loader 行 `config.version` 触发 HMR 重应用 + 轮询 API 直到恢复 | 无 |
-| `--skip-patch` | 只复制包、不修改补丁文件 | 无 |
+</details>
 
-### 安装后验证
+装完**硬刷新浏览器**（Cmd/Ctrl+Shift+R），打开 **设置 → MCP 管理** 即可看到管理页。若未出现，重启一次 DSH（host 半首次挂载需要）。
 
-1. **重启 DSH**（宿主插件与客户端模块在启动时加载；`mcp_manager_*` 4 个工具也在重启后注册）。
-2. 打开 **设置 → MCP 管理**，应能看到页面并管理现有 MCP 服务（如 stepfun）。
+<details>
+<summary><b>卸载</b></summary>
 
-> 如果页面在安装前就已打开，先刷新浏览器（启动载荷在页面加载时构建）；仍不出现则重启 DSH。
-
-## 卸载
-
-```bash
-# npm 全局安装时（推荐）
-dsh-mcp-manager-uninstall
-
-# 或使用脚本 / 直接运行
-# Windows
-.\dsh-mcp-manager\uninstall.ps1 [-DshHome <路径>] [-Profile <名>]
-# macOS / Linux
-./dsh-mcp-manager/uninstall.sh [--dsh-home <路径>] [--profile <名>]
-# 任何平台
-node dsh-mcp-manager/uninstall.mjs [--dsh-home <路径>] [--profile <名>]
+```sh
+dsh-mcp-manager-uninstall                          # 若用 npm -g 安装
+# 或：.\uninstall.ps1 | ./uninstall.sh | node uninstall.mjs [--dsh-home <path>] [--profile <name>]
 ```
 
-然后重启 DSH。卸载会删除部署副本、`local-packages` 真源目录，并清理补丁里的 loader 行（补丁保持合法的顶层数组）。
+然后重启 DSH。卸载删除部署副本、`local-packages` 真源，并清理 loader 行（补丁保持合法）。
 
-## DSH 升级后：--repair
+</details>
 
-DSH 升级（或 HMR 状态异常）后若发现 **设置里没有"MCP 管理"** 或 **`mcp_manager_*` 工具消失**，运行一次修复命令即可：重新复制包、把 loader 行的 `config.version` 加一（触发 HMR 重新应用）、然后轮询 API 直到 `POST /dsh-mcp-manager/api` 返回 `{ok:true}`（默认等 30 秒）。
+<details>
+<summary><b>DSH 升级后：--repair</b></summary>
 
-```bash
+DSH 升级（或 HMR 状态异常）后若 **设置里没有"MCP 管理"** 或 **`mcp_manager_*` 工具消失**，运行一次修复命令：重新部署 → 递增 loader 行 `config.version`（触发 HMR 重应用）→ 轮询 API 直到 `{ok:true}`（默认 30 秒）。
+
+```sh
 node dsh-mcp-manager/install.mjs --repair --port 3080
+# PowerShell: .\install.ps1 -Repair -Port 3080    bash: ./install.sh --repair --port 3080
 ```
 
-> 如果 30 秒后 API 仍未恢复，重启一次 DSH——loader 在启动时会重新导入最新代码。
+仍不恢复则重启一次 DSH（loader 启动时重新导入）。
 
-## API 参考
+</details>
 
-所有操作均为 `POST /dsh-mcp-manager/api`，请求体 `{"op": "<op>", "args": {...}}`，同源。
+<details>
+<summary><b>常见问题</b></summary>
 
-| op | args | 结果 |
-|---|---|---|
-| `mcpm-list` | `{}` | `{ok, rows[], paths, errors[]}` |
-| `mcpm-add` | `{serverName, transport, url\|command, args?, headers?, env?, level, enabled?}` | `{ok, row}` |
-| `mcpm-edit` | `{id, level, ...fields}` | `{ok}` |
-| `mcpm-set-enabled` | `{id, level, enabled}` | `{ok}` |
-| `mcpm-restart` | `{id, level}` | `{ok}` |
-| `mcpm-remove` | `{id, level}` | `{ok}` |
-| `mcpm-export` | `{}` | `{ok, json, savedTo}` |
-| `mcpm-import` | `{json}` | `{ok, added[], skipped[]}` |
-
-## 模型工具
-
-宿主上用 `ctx.tools.register(defineTool(...))` 注册（标准 `@deepseek-ai/dsh-tools`）：
-
-| 工具 | 说明 |
+| 现象 | 原因与解决 |
 |---|---|
-| `mcp_manager_list` | 列出所有已配置的 MCP 服务（级别、启用状态、loader 实时状态、工具数） |
-| `mcp_manager_set_enabled` | 启用 / 禁用某个服务（id, level, enabled） |
-| `mcp_manager_restart` | 重启某个服务（id, level） |
-| `mcp_manager_add` | 新增服务（serverName, transport, url\|command, …, level） |
+| 装完设置里没有"MCP 管理" | 硬刷新（Cmd/Ctrl+Shift+R）；仍没有就重启 DSH 一次。 |
+| 页面出现**两个 MCP 页签 / 工具重复** | 双挂载：同时用了 install.mjs 与 `dsh plugin add` 两种方式。卸载其中一种（`dsh-mcp-manager-uninstall` 或删掉对应的 loader 行 / `dsh.profile.bundles` 条目）。 |
+| DSH 升级后工具消失 | 跑一次 `--repair`（见上）。 |
+| `npx` / `npm view` 报 404 | 国内镜像（npmmirror）同步有延迟：加 `--registry=https://registry.npmjs.org` 或稍等再试。 |
+| 安装脚本报错 `EPERM` | DSH 正在运行占用了文件：先退出 DSH 再装。 |
+| 修改配置后未生效 | 所有修改走 HMR 热应用，等 1–2 秒自动刷新；页面会自动轮询。 |
 
-## 注意事项 / 限制
+</details>
 
-- HTTP 路由在本机 Web 服务上**无鉴权**——仅适合本机单人使用，不要把 DSH 的 Web 端口暴露到公网。
-- 托管行带 `# dsh-mcp-manager:server:<id>` 标记；loader 行是 `insert` 块添加的 `id: mcp-manager, name: dsh-mcp-manager`（普通 `- id:` 行在 DSH patch 方言里只是覆盖，不能新增条目）。
-- 如果打开中的页面先于安装存在，需要刷新页面或重启 DSH（启动图在页面加载时构建）。
+## 📖 使用说明
 
-## 许可
+打开 **设置 → MCP 管理**：
 
-[MIT](LICENSE)
+- **添加服务器**：填写 `serverName`（唯一，1–32 位 `[A-Za-z0-9_-]`）、传输方式及对应字段（`streamable-http` 填 URL / headers；`stdio` 填 command / args / env），选择级别（项目级 / 全局）。面板做格式与重名校验。
+- 每张卡片显示实时状态、连接目标与工具数；可 **启用 / 停用**、**重启**、**编辑**、**删除**。
+- **备份 / 恢复**：一键导出 JSON，或粘贴 JSON 导入（合并新增，已存在自动跳过）。
+- 页面底部显示正在编辑的补丁文件路径。
+
+## ⚙️ 配置
+
+插件自身在 loader 行中的配置：
+
+| 字段 | 说明 |
+|---|---|
+| `version` | loader 行 `config.version`。`--repair` 会将其递增以强制 HMR 重应用，无需手动修改。 |
+
+loader 行必须为 **`insert` 块**形式（DSH patch 方言中普通 `- id:` 行只是对已存在条目的覆盖，无法新增插件）：
+
+```yaml
+- insert:
+    - id: dsh-mcp-manager
+      name: dsh-mcp-manager
+      config:
+        version: 1
+```
+
+## 🏗️ 架构
+
+- **宿主端**（`src/index.ts` → `lib/index.js`，对象形态 Cordis 插件 `{name, inject, apply}`）：`inject` 声明 `timer/fs/settings/sandboxPolicy/webServer/tools`，框架保证就绪并在依赖消失时自动重载——这是插件跨 DSH 升级存活的机制。注册 4 个模型工具（`ctx.tools.register(defineTool(...))`）与精确路由 `POST /dsh-mcp-manager/api`（`ctx.effect` 作用域化清理）；对 `cordis.patch.yml` 做行级 CRUD（迷你 YAML 解析 + 按文件写锁）。
+- **浏览器端**（`lib/client.js`，ModuleLoader CJS bundle）：注册 设置 → MCP 管理 页（`settings.section` 槽位，order 16），经同源 `fetch('/dsh-mcp-manager/api')` 与宿主通信，不直接访问文件系统。
+- **loader 行**：写入 profile 的 `cordis.patch.yml`，client-modules 服务扫描启用的条目并下发客户端 bundle。
+- **安装器**：`install.mjs`（跨平台核心）/ `install.ps1` / `install.sh` + 对应的 `uninstall.*`；npm 包 `@xxxyz/dsh-mcp-manager` 的 bin 直接执行安装器（`dsh-mcp-manager` / `dsh-mcp-manager-uninstall`）。
+
+## 🛠️ 开发
+
+```bash
+npm install
+npm run build        # tsc -p tsconfig.json → lib/index.js（宿主端）
+```
+
+- 宿主插件源码：`src/index.ts`；浏览器 bundle：`lib/client.js`（手写，无需构建）
+- 包本身纯 JS、零依赖、跨平台；构建只需 devDependencies（typescript、`@deepseek-ai/cordis`、`@deepseek-ai/dsh-tools`、`@types/node`）
+- 发布：`npm version patch && npm publish`（`prepublishOnly` 自动构建；scoped 包已配置 `publishConfig.access: public`）
+
+## 许可证
+
+MIT
