@@ -2,11 +2,11 @@
 
 <!-- Hero -->
 <div align="center">
-  <b style="font-size: 1.15em;">Manage every MCP server in DeepSeek Harness from one settings page — install, configure, monitor.</b><br /><br />
-  <code>server list</code> <code>add / edit / delete</code> <code>enable / disable</code> <code>restart</code> <code>tool-count health</code> <code>JSON export / import</code><br />
-  <code>4 model tools</code> <code>HTTP API</code> <code>npx / npm / dsh plugin / scripts</code><br /><br />
-  <b>Settings → MCP 管理</b> manages <code>@deepseek-ai/dsh-mcp-client</code> rows in your project-level and
-  global <code>cordis.patch.yml</code> — no hand-editing, every change applies live via HMR, survives restarts and upgrades.
+  <b style="font-size: 1.15em;">DeepSeek Harness 的 MCP 服务管理器：装没装、连没连、一页管完。</b><br /><br />
+  <code>服务器列表</code> <code>新增 / 编辑 / 删除</code> <code>启用 / 停用</code> <code>重启</code> <code>工具数健康</code> <code>JSON 导出 / 导入</code><br />
+  <code>4 个模型工具</code> <code>HTTP API</code> <code>npx / npm / dsh plugin / 脚本</code><br /><br />
+  <b>设置 → MCP 管理</b> 管理项目级与全局 <code>cordis.patch.yml</code> 中的 <code>@deepseek-ai/dsh-mcp-client</code> 行——<br />
+  无需再手改配置文件，所有修改即改即生效（HMR 热应用），重启、升级后依然存在。
 </div>
 
 <div align="center">
@@ -19,12 +19,12 @@
 </div>
 
 <div align="center">
-  🌏 <a href="./README.md"><b>English</b></a> · <a href="./README.zh-CN.md">中文</a>
+  🌏 <a href="./README.md"><b>中文</b></a> · <a href="./README_EN.md">English</a>
 </div>
 
 <br />
 
-<p align="center"><img src="show.png" alt="dsh-mcp-manager Settings → MCP 管理" /></p>
+<p align="center"><img src="show.png" alt="dsh-mcp-manager 设置 → MCP 管理 页面图例" /></p>
 
 ## ✨ 功能一览
 
