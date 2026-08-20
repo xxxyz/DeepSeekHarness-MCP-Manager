@@ -1,0 +1,7 @@
+# Bundle patch layer for `dsh plugin add` installs: pnpm installs the scoped
+# package as @xxxyz/dsh-mcp-manager, so the insert row names the scoped
+# package. The loader-entry installer (install.mjs) mounts the same plugin
+# under `dsh-mcp-manager` — both names are registered by the client bundle.
+- insert:
+    - id: dsh-mcp-manager
+      name: '@xxxyz/dsh-mcp-manager'
