@@ -1,6 +1,6 @@
 {
   "name": "@xxxyz/dsh-mcp-manager",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "DSH-standard MCP manager plugin: Settings UI + HTTP API + model-facing mcp_manager_* tools. Composed as a loader entry, survives restarts. Install via npx, PowerShell, bash or node.",
   "type": "module",
   "main": "lib/index.js",
