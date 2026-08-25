@@ -15,7 +15,13 @@
 [![License](https://img.shields.io/github/license/xxxyz/DeepSeekHarness-MCP-Manager?color=blue)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js)](package.json)
 [![GitHub](https://img.shields.io/badge/GitHub-xxxyz%2FDeepSeekHarness--MCP--Manager-181717?logo=github)](https://github.com/xxxyz/DeepSeekHarness-MCP-Manager)
+[![dsh.market](https://img.shields.io/badge/dsh.market-%E2%9C%93-3fb950)](https://dsh.market)
+[![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-pending-ffd93d)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/2078)
 
+</div>
+
+<div align="center">
+  🛒 Listed on <a href="https://dsh.market"><b>dsh.market</b></a> · submitted to <a href="https://awesome-dsh-plugin.com"><b>awesome-dsh-plugin.com</b></a> (<a href="https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/2078"><b>PR #2078</b></a> pending merge)
 </div>
 
 <div align="center">
