@@ -273,7 +273,7 @@ async function pollApi(port, timeoutMs) {
     try {
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'x-dsh-plugin': 'dsh-mcp-manager' },
         body: JSON.stringify({ op: 'mcpm-list', args: {} }),
         signal: timeoutSignal(2000),
       })
