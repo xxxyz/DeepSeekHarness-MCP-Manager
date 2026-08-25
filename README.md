@@ -36,7 +36,7 @@
 - **🩺 健康检查**：每台服务器实时工具数与 loader 阶段，异常一目了然
 - **📦 备份 / 恢复**：JSON 导出 / 导入，合并新增、已存在自动跳过
 - **🤖 模型工具**：宿主注册 4 个 `mcp_manager_*` 工具，模型可直接查询与操作 MCP 服务
-- **🌐 HTTP API**：`POST /dsh-mcp-manager/api`（JSON `{op, args}` → `{ok, ...}`），供客户端与脚本调用
+- **🌐 HTTP API**：`POST /dsh-mcp-manager/api`（JSON `{op, args}` → `{ok, ...}`），供客户端与脚本调用。带跨站（CSRF）防护：仅接受 POST、必须携带 `x-dsh-plugin: dsh-mcp-manager` 请求头、校验同源 Origin（curl 等本地脚本无需 Origin）
 - **📦 跨平台安装**：Windows / macOS / Linux 一条命令（npx / npm / `dsh plugin` / 脚本）
 
 ## 🚀 安装

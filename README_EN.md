@@ -36,7 +36,7 @@
 - **🩺 Health check** — live tool counts and loader phase per server, problems visible at a glance
 - **📦 Backup / Restore** — JSON export / import; merges new entries, skips existing ones
 - **🤖 Model tools** — four `mcp_manager_*` tools registered on the host, so the model can query and manage MCP servers directly
-- **🌐 HTTP API** — `POST /dsh-mcp-manager/api` (JSON `{op, args}` → `{ok, ...}`) for the client and scripts
+- **🌐 HTTP API** — `POST /dsh-mcp-manager/api` (JSON `{op, args}` → `{ok, ...}`) for the client and scripts. Cross-site (CSRF) protected: POST-only, requires the `x-dsh-plugin: dsh-mcp-manager` request header, and checks the Origin is same-origin (local scripts without an Origin are fine)
 - **📦 Cross-platform install** — one command on Windows / macOS / Linux (npx / npm / `dsh plugin` / scripts)
 
 ## 🚀 Install
