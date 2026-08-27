@@ -459,23 +459,32 @@ function SkillPage() {
     SKM_GROUPS.map((key) => {
       const items = visible.filter((s) => skmLevelOf(s) === key)
       if (!items.length) return null
-      const rows = items.map((s) => {
-        const overridden = s.provider === 'dsh-mcp-manager-override'
-        const available = !!(s.invocation && s.invocation.modelInvocable)
-        return React.createElement('div', { className: 'mcpm-row', key: s.name },
-          React.createElement('div', { className: 'mcpm-row-head' },
-            React.createElement('span', { className: 'mcpm-name' }, s.name),
-            React.createElement('span', { className: 'mcpm-chip ' + (available ? 'on' : 'off') }, available ? '可用' : '禁用'),
-            overridden && React.createElement('span', { className: 'mcpm-chip warn' }, '手动禁用'),
-            React.createElement('span', { className: 'mcpm-chip live' }, s.provider)),
-          React.createElement('div', { className: 'mcpm-sub' }, s.description || ''),
-          React.createElement('div', { className: 'mcpm-row-actions' },
-            React.createElement('button', { className: 'mcpm-btn', disabled: busy === s.name, onClick: () => toggle(s) }, overridden ? '启用' : '禁用')))
-      })
+      // within a level, sub-group by provider (collapsible)
+      const byProvider = {}
+      items.forEach((s) => { const p = s.provider || 'unknown'; (byProvider[p] = byProvider[p] || []).push(s) })
+      const providerKeys = Object.keys(byProvider).sort()
       return React.createElement(React.Fragment, { key },
-        React.createElement('div', { className: 'skm-group-title', onClick: () => toggleGroup(key), style: { cursor: 'pointer' }, title: '点击折叠/展开' },
-          (query || !hidden[key] ? '▾ ' : '▸ ') + key + '（' + items.length + '）'),
-        (query || !hidden[key]) ? rows : null)
+        React.createElement('div', { className: 'skm-group-title' }, key + '（' + items.length + '）'),
+        providerKeys.map((pk) => {
+          const pItems = byProvider[pk]
+          const collapsed = !query && !!hidden[pk]
+          return React.createElement(React.Fragment, { key: pk },
+            React.createElement('div', { className: 'skm-provider-title', onClick: () => toggleGroup(pk), title: '点击折叠/展开' },
+              (collapsed ? '▸ ' : '▾ ') + pk + '（' + pItems.length + '）'),
+            collapsed ? null : pItems.map((s) => {
+              const overridden = s.provider === 'dsh-mcp-manager-override'
+              const available = !!(s.invocation && s.invocation.modelInvocable)
+              return React.createElement('div', { className: 'mcpm-row', key: s.name },
+                React.createElement('div', { className: 'mcpm-row-head' },
+                  React.createElement('span', { className: 'mcpm-name' }, s.name),
+                  React.createElement('span', { className: 'mcpm-chip ' + (available ? 'on' : 'off') }, available ? '可用' : '禁用'),
+                  overridden && React.createElement('span', { className: 'mcpm-chip warn' }, '手动禁用'),
+                  React.createElement('span', { className: 'mcpm-chip live' }, s.provider)),
+                React.createElement('div', { className: 'mcpm-sub' }, s.description || ''),
+                React.createElement('div', { className: 'mcpm-row-actions' },
+                  React.createElement('button', { className: 'mcpm-btn', disabled: busy === s.name, onClick: () => toggle(s) }, overridden ? '启用' : '禁用')))
+            }))
+        }))
     }))
 }
 ```
