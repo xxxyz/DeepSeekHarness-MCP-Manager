@@ -3,3 +3,6 @@ npm-debug.log*
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+
+.superpowers/
+*.tgz
