@@ -13,6 +13,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
+import { createRequire } from 'node:module'
 
 // ---------------------------------------------------------------------------
 // Minimal structural types for the service surfaces this plugin touches.
@@ -132,6 +133,13 @@ export default {
     const tools = ctx.tools
     // pluginInventory is optional: probe at use time, degrade to no live info.
     const pluginInventory = ctx.get('pluginInventory') as PluginInventoryService | undefined
+
+    // Package version, surfaced in the Settings pages and the HTTP API. Read
+    // from the installed package.json so it always matches the release tag.
+    let PKG_VERSION = 'unknown'
+    try {
+      PKG_VERSION = (createRequire(import.meta.url)('../package.json') as { version?: string }).version || 'unknown'
+    } catch (e) { /* keep unknown */ }
 
     const wait = (ms: number) => ctx.timeout(ms)
     const message = (e: unknown) => String((e && (e as Error).message) || e)
@@ -667,6 +675,10 @@ export default {
     }
 
     // ---------- ops ----------
+    async function pluginVersion(): Promise<any> {
+      return { ok: true, version: PKG_VERSION }
+    }
+
     async function mcpmList(): Promise<any> {
       const p = await ensurePaths()
       const rows: any[] = []
@@ -930,6 +942,7 @@ export default {
     }
 
     const handlers: Record<string, (args: any) => Promise<any>> = {
+      'plugin-version': pluginVersion,
       'mcpm-list': mcpmList,
       'mcpm-add': mcpmAdd,
       'mcpm-edit': mcpmEdit,
