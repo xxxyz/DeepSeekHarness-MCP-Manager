@@ -412,14 +412,18 @@ git commit -m "feat: skill-list / skill-toggle ops with rank-0 override provider
 - [ ] **Step 2: apply 内（`MCPPage` 定义之后、section 注册之前）插入 SkillPage**
 
 ```js
-const SKM_LEVELS = [
-  { key: 'project', label: '项目级', test: (s) => s.source === 'project-dsh' || s.source === 'project-agents' },
-  { key: 'runtime', label: '运行时', test: (s) => s.source === 'runtime' },
-  { key: 'custom', label: '自定义', test: (s) => s.source === 'custom' },
-  { key: 'user', label: '用户级', test: (s) => s.source === 'user-dsh' || s.source === 'user-agents' },
-  { key: 'bundled', label: '内置', test: (s) => s.source === 'bundled' },
-  { key: 'plugin', label: '插件自带', test: (s) => !['project-dsh', 'project-agents', 'runtime', 'custom', 'user-dsh', 'user-agents', 'bundled'].includes(s.source) },
-]
+// Grouping: built-in providers are "filesystem" (project/user/custom/bundled
+// roots) and "runtime" (register()); any other provider name means a
+// plugin-provided skill (e.g. superpowers-dsh). skmLevelOf is mutually exclusive.
+function skmLevelOf(s) {
+  if (s.source === 'project-dsh' || s.source === 'project-agents') return '项目级'
+  if (s.source === 'runtime') return '运行时'
+  if (s.source === 'user-dsh' || s.source === 'user-agents') return '用户级'
+  if (s.source === 'bundled') return '内置'
+  if (s.source === 'custom' && s.provider === 'filesystem') return '自定义'
+  return '插件自带'
+}
+const SKM_GROUPS = ['项目级', '运行时', '自定义', '用户级', '内置', '插件自带']
 function SkillPage() {
   const [state, setState] = React.useState({ loading: true, error: null, skills: [] })
   const [q, setQ] = React.useState('')
@@ -450,24 +454,25 @@ function SkillPage() {
     React.createElement('input', { className: 'skm-search', placeholder: '搜索技能名称或描述…', value: q, onChange: (e) => setQ(e.target.value) }),
     state.loading ? React.createElement('div', { className: 'mcpm-sub' }, '加载中…') :
     state.error ? React.createElement('div', { className: 'mcpm-msg err' }, state.error) :
-    SKM_LEVELS.map((lv) => {
-      const items = visible.filter(lv.test)
+    SKM_GROUPS.map((key) => {
+      const items = visible.filter((s) => skmLevelOf(s) === key)
       if (!items.length) return null
-      return React.createElement(React.Fragment, { key: lv.key },
-        React.createElement('div', { className: 'skm-group-title' }, lv.label + '（' + items.length + '）'),
-        items.map((s) => {
-          const overridden = s.provider === 'dsh-mcp-manager-override'
-          const available = !!(s.invocation && s.invocation.modelInvocable)
-          return React.createElement('div', { className: 'mcpm-row', key: s.name },
-            React.createElement('div', { className: 'mcpm-row-head' },
-              React.createElement('span', { className: 'mcpm-name' }, s.name),
-              React.createElement('span', { className: 'mcpm-chip ' + (available ? 'on' : 'off') }, available ? '可用' : '禁用'),
-              overridden && React.createElement('span', { className: 'mcpm-chip warn' }, '手动禁用'),
-              React.createElement('span', { className: 'mcpm-chip live' }, s.provider)),
-            React.createElement('div', { className: 'mcpm-sub' }, s.description || ''),
-            React.createElement('div', { className: 'mcpm-row-actions' },
-              React.createElement('button', { className: 'mcpm-btn', disabled: busy === s.name, onClick: () => toggle(s) }, overridden ? '启用' : '禁用'))))
-        })
+      const rows = items.map((s) => {
+        const overridden = s.provider === 'dsh-mcp-manager-override'
+        const available = !!(s.invocation && s.invocation.modelInvocable)
+        return React.createElement('div', { className: 'mcpm-row', key: s.name },
+          React.createElement('div', { className: 'mcpm-row-head' },
+            React.createElement('span', { className: 'mcpm-name' }, s.name),
+            React.createElement('span', { className: 'mcpm-chip ' + (available ? 'on' : 'off') }, available ? '可用' : '禁用'),
+            overridden && React.createElement('span', { className: 'mcpm-chip warn' }, '手动禁用'),
+            React.createElement('span', { className: 'mcpm-chip live' }, s.provider)),
+          React.createElement('div', { className: 'mcpm-sub' }, s.description || ''),
+          React.createElement('div', { className: 'mcpm-row-actions' },
+            React.createElement('button', { className: 'mcpm-btn', disabled: busy === s.name, onClick: () => toggle(s) }, overridden ? '启用' : '禁用')))
+      })
+      return React.createElement(React.Fragment, { key },
+        React.createElement('div', { className: 'skm-group-title' }, key + '（' + items.length + '）'),
+        rows)
     }))
 }
 ```
