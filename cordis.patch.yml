@@ -17,7 +17,16 @@
 # instance then owns the API. The loader evaluates the expression at entry
 # activation — the full entry tree is composed by then, so user-layer
 # (profile cordis.patch.yml) rows are visible too.
+#
+# ORDER MATTERS — do not move `!e.disabled` ahead of the id/name checks.
+# `Entry.disabled` is an uncached getter that re-evaluates the expression,
+# so touching `e.disabled` of THIS entry re-enters this very expression
+# (infinite recursion → "Maximum call stack size exceeded" at boot). The
+# `id !==` check short-circuits on our own row and the `name` check
+# short-circuits on every unrelated entry (e.g. dsh-better-sidebar's own
+# guard), so `!e.disabled` is only ever read on a genuinely matching
+# legacy/aggregate row (a plain boolean, no re-entry).
 - insert:
     - id: dsh-mcp-manager
       name: '@xxxyz/dsh-mcp-manager'
-      disabled: !!js "[...ctx.loader.entries()].some((e) => !e.disabled && e.options.id !== 'dsh-mcp-manager' && (e.options.name === 'dsh-mcp-manager' || e.options.name === '@xxxyz/dsh-mcp-manager'))"
+      disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.id !== 'dsh-mcp-manager' && (e.options.name === 'dsh-mcp-manager' || e.options.name === '@xxxyz/dsh-mcp-manager') && !e.disabled)"
