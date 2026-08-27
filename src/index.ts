@@ -68,12 +68,46 @@ interface PluginInventoryService {
   list(): Promise<{ entries: PluginInventoryEntry[] }>
 }
 
+// ---------- Skills management types (minimal surface of ctx.skills) ----------
+interface SkillInvocation {
+  modelInvocable: boolean
+  userInvocable: boolean
+}
+interface SkillSummary {
+  name: string
+  description: string
+  whenToUse?: string
+  invocation: SkillInvocation
+  source: string
+  provider: string
+  resourceBase?: unknown
+  path?: string
+}
+interface SkillDefinition extends SkillSummary {
+  content: string
+  metadata?: unknown
+}
+interface SkillProviderControl {
+  signal: { aborted: boolean; addEventListener(type: string, fn: () => void, opts?: unknown): void }
+  invalidate(): void
+}
+interface SkillService {
+  registerProvider(create: (control: SkillProviderControl) => {
+    name: string
+    list(options?: unknown): Promise<SkillSummary[] | { candidates: SkillSummary[]; complete: boolean }>
+    get(candidate: SkillSummary, options?: unknown): Promise<SkillDefinition | undefined>
+  }): unknown
+  snapshot(options?: unknown): Promise<{ skills: SkillSummary[]; complete: boolean }>
+  get(name: string, options?: unknown): Promise<SkillDefinition | undefined>
+}
+
 interface DshContext extends Context {
   timer: unknown
   fs: FsService
   settings: SettingsService
   sandboxPolicy: SandboxPolicyService
   webServer: WebServerService
+  skills: SkillService
   timeout(delay: number): Promise<void>
 }
 
@@ -89,7 +123,7 @@ interface ManagedRow {
 
 export default {
   name: 'dsh-mcp-manager-host',
-  inject: ['timer', 'fs', 'settings', 'sandboxPolicy', 'webServer', 'tools'],
+  inject: ['timer', 'fs', 'settings', 'sandboxPolicy', 'webServer', 'tools', 'skills'],
   apply(ctx: DshContext) {
     const fs = ctx.fs
     const settings = ctx.settings
@@ -107,6 +141,107 @@ export default {
       const run = writeChain.then(() => fn(), () => fn())
       writeChain = run.then(() => undefined, () => undefined)
       return run
+    }
+
+    // ---------- skills management: list + enable/disable (rank-0 override provider) ----------
+    // A skill is disabled by advertising a same-name candidate with a rank lower
+    // than every real provider (project-dsh is 100; we use 0), so a user-explicit
+    // disable wins over any level — including project-level skills. State persists
+    // to <profile>/dsh-skill-manager.json and is re-applied lazily (providers may
+    // still be starting up when this plugin applies).
+    const OVERRIDE_PROVIDER = 'dsh-mcp-manager-override'
+    const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+    const overrideSkills = new Map<string, SkillDefinition>()
+    let skillProviderControl: SkillProviderControl | null = null
+
+    const statePath = async () => {
+      const p = await ensurePaths()
+      const s = p.profileDir.indexOf('\\') >= 0 ? '\\' : '/'
+      return p.profileDir + s + 'dsh-skill-manager.json'
+    }
+    async function readState(): Promise<string[]> {
+      try {
+        const raw = await fs.readText(await fs.resolve(await statePath()))
+        const data = JSON.parse(raw)
+        return Array.isArray(data.disabledSkills) ? data.disabledSkills.filter((n: unknown): n is string => typeof n === 'string') : []
+      } catch (e) {
+        return []
+      }
+    }
+    async function saveState(names: string[]): Promise<void> {
+      const policy = await sandboxPolicy.resolve({ mode: 'danger-full-access' })
+      await fs.writeText(await fs.resolve(await statePath()), JSON.stringify({ version: 1, disabledSkills: names }, null, 2), undefined, undefined, policy)
+    }
+
+    const overrideProvider = {
+      name: OVERRIDE_PROVIDER,
+      async list() {
+        return [...overrideSkills.values()].map((d) => ({
+          name: d.name,
+          description: d.description,
+          ...(d.whenToUse !== undefined ? { whenToUse: d.whenToUse } : {}),
+          invocation: d.invocation,
+          source: d.source,
+          provider: OVERRIDE_PROVIDER,
+          rank: 0,
+          ...(d.path !== undefined ? { path: d.path } : {}),
+          locator: d.name,
+        }))
+      },
+      async get(candidate: SkillSummary) {
+        return overrideSkills.get(candidate.name)
+      },
+    }
+    try {
+      ctx.skills.registerProvider((control) => {
+        skillProviderControl = control
+        return overrideProvider
+      })
+    } catch (e) {
+      console.error('[dsh-mcp-manager] skills override provider registration failed:', message(e))
+    }
+
+    async function ensureRestored(): Promise<void> {
+      let changed = false
+      for (const name of await readState()) {
+        if (overrideSkills.has(name)) continue
+        const def = await ctx.skills.get(name)
+        if (!def) continue
+        overrideSkills.set(name, { ...def, provider: OVERRIDE_PROVIDER, invocation: { modelInvocable: false, userInvocable: false } })
+        changed = true
+      }
+      if (changed && skillProviderControl) skillProviderControl.invalidate()
+    }
+    ;(ctx.on as (event: string, callback: () => void) => unknown)('skills/change', () => { void ensureRestored() })
+
+    async function skillList() {
+      await ensureRestored()
+      const snap = await ctx.skills.snapshot({})
+      return { ok: true, skills: snap.skills, complete: snap.complete !== false }
+    }
+    async function skillToggle(args: { name?: string; enabled?: boolean }) {
+      const name = String(args.name || '').trim()
+      if (!name) return { ok: false, error: '技能名不能为空' }
+      if (!SKILL_NAME_RE.test(name)) return { ok: false, error: '技能名格式非法（需 kebab-case）' }
+      await ensureRestored()
+      const enabled = args.enabled !== false
+      return withWriteLock(async () => {
+        if (enabled) {
+          if (overrideSkills.delete(name)) {
+            await saveState([...overrideSkills.keys()])
+            skillProviderControl?.invalidate()
+          }
+        } else {
+          if (!overrideSkills.has(name)) {
+            const def = await ctx.skills.get(name)
+            if (!def) return { ok: false, error: '技能不存在: ' + name }
+            overrideSkills.set(name, { ...def, provider: OVERRIDE_PROVIDER, invocation: { modelInvocable: false, userInvocable: false } })
+            await saveState([...overrideSkills.keys()])
+            skillProviderControl?.invalidate()
+          }
+        }
+        return { ok: true }
+      })
     }
 
     // ---------- path discovery ----------
@@ -803,6 +938,8 @@ export default {
       'mcpm-remove': mcpmRemove,
       'mcpm-export': mcpmExport,
       'mcpm-import': mcpmImport,
+      'skill-list': skillList,
+      'skill-toggle': skillToggle,
     }
 
     // ---------- agent-facing tools (standard ctx.tools.register + defineTool) ----------
