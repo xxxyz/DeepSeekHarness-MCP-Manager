@@ -126,7 +126,7 @@ npm publish --registry=https://registry.npmjs.org   # prepublishOnly 自动 buil
 - 本机 `~/.dsh/profiles/web/package.json` 的依赖若是本地 tarball，需改回 `@xxxyz/dsh-mcp-manager@^<版本>` 再 `pnpm install`（否则删掉 tarball 后重装会挂）。
 - 验证 `npm view @xxxyz/dsh-mcp-manager version --registry=https://registry.npmjs.org`。
 - 重启 dsh web 确认新版本生效（mcpm-list / skill-list 探测 API）。
-- **pnpm 11 minimumReleaseAge 供应链策略**：新版本发布不足 24h 时，`dsh plugin add @latest` 会**静默回退到旧版本**（`downloaded 0` + dependencies 仍写旧版 `^x.y.z`，无任何报错）。解法：把包加入 `~/.dsh/profiles/web/pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`，用**不带版本号**的最宽形式（`- '@xxxyz/dsh-mcp-manager'`，全部版本放行）——`pkg@2.1.0 || 2.1.1` 这类 OR 范围格式实测匹配不上新版本。诊断命令：`pnpm add <pkg>@latest --lockfile-only --config.minimumReleaseAge=0`（若解析到新版本即坐实是 release-age 拦截）。
+- **pnpm 11 minimumReleaseAge 供应链策略**：新版本发布不足 24h 时，`dsh plugin add @latest` 会**静默回退到旧版本**（`downloaded 0` + dependencies 仍写旧版 `^x.y.z`，无任何报错）。解法：把**新版本号追加进** `~/.dsh/profiles/web/pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`，且**必须用带版本号的 OR 范围形式**（`- '@xxxyz/dsh-mcp-manager@2.1.0 || 2.1.1 || 2.1.2 || 2.1.3'`）——**不带版本号的形式实测 pnpm 不认**，装不上新版本。诊断命令：`pnpm add <pkg>@latest --lockfile-only --config.minimumReleaseAge=0`（若解析到新版本即坐实是 release-age 拦截）。
 
 ## 九、维护注意
 
