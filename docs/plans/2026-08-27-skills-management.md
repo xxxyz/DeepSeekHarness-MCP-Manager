@@ -429,6 +429,8 @@ function SkillPage() {
   const [q, setQ] = React.useState('')
   const [busy, setBusy] = React.useState(null)
   const [msg, setMsg] = React.useState(null)
+  const [hidden, setHidden] = React.useState({})
+  const toggleGroup = (key) => setHidden((h) => ({ ...h, [key]: !h[key] }))
   const refresh = () => {
     apiCall('skill-list', {}).then((res) => {
       setState({ loading: false, error: res && res.ok ? null : ((res && res.error) || '加载失败'), skills: (res && res.skills) || [] })
@@ -471,8 +473,9 @@ function SkillPage() {
             React.createElement('button', { className: 'mcpm-btn', disabled: busy === s.name, onClick: () => toggle(s) }, overridden ? '启用' : '禁用')))
       })
       return React.createElement(React.Fragment, { key },
-        React.createElement('div', { className: 'skm-group-title' }, key + '（' + items.length + '）'),
-        rows)
+        React.createElement('div', { className: 'skm-group-title', onClick: () => toggleGroup(key), style: { cursor: 'pointer' }, title: '点击折叠/展开' },
+          (query || !hidden[key] ? '▾ ' : '▸ ') + key + '（' + items.length + '）'),
+        (query || !hidden[key]) ? rows : null)
     }))
 }
 ```
