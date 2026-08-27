@@ -109,6 +109,7 @@ interface DshContext extends Context {
   sandboxPolicy: SandboxPolicyService
   webServer: WebServerService
   skills: SkillService
+  config?: Record<string, unknown>
   timeout(delay: number): Promise<void>
 }
 
@@ -140,6 +141,18 @@ export default {
     try {
       PKG_VERSION = (createRequire(import.meta.url)('../package.json') as { version?: string }).version || 'unknown'
     } catch (e) { /* keep unknown */ }
+
+    // Optional access token (defense in depth for LAN exposure). Enabled by
+    // setting `config.token` on this plugin's loader row (profile
+    // cordis.patch.yml override) or the DSH_MCP_MANAGER_TOKEN env var. When
+    // set, every state-changing op requires `x-dsh-token: <token>`. Read-only
+    // ops (plugin-version, mcpm-list, skill-list) stay open so the UI still
+    // renders; mcpm-export is guarded too because it leaks full configs.
+    const TOKEN = String((ctx.config as { token?: unknown } | undefined)?.token || process.env.DSH_MCP_MANAGER_TOKEN || '').trim()
+    const WRITE_OPS = new Set([
+      'mcpm-add', 'mcpm-edit', 'mcpm-remove', 'mcpm-set-enabled', 'mcpm-restart',
+      'mcpm-export', 'mcpm-import', 'skill-toggle',
+    ])
 
     const wait = (ms: number) => ctx.timeout(ms)
     const message = (e: unknown) => String((e && (e as Error).message) || e)
@@ -253,6 +266,10 @@ export default {
     }
 
     // ---------- path discovery ----------
+    // Known limitation: profile detection probes 'web' then 'headless' by
+    // presence of profiles/<name>/cordis.patch.yml, then falls back to any
+    // profile that has one, and finally to 'web'. A profile whose directory
+    // name matches none of these and has no patch file yet is not detected.
     let cached: { home: string; profileDir: string; profileName: string; projectPatch: string; globalPatch: string } | null = null
     async function ensurePaths() {
       if (cached) return cached
@@ -373,6 +390,11 @@ export default {
     }
 
     // ---------- YAML parsing (mini parser) ----------
+    // Known limitation: this hand-rolled parser assumes the exact indentation
+    // style that buildInsertBlock emits (config at 6 spaces, children at 8,
+    // nested maps/lists at 10+). Hand-edited patch files using different
+    // indentation may parse incorrectly — DSH itself only cares about the
+    // effective YAML it reads, and this parser exists purely for the UI.
     function splitKV(text: string): { key: string; value: string } | null {
       const m = text.match(/^("(?:\\.|[^"])*"|'[^']*'|[^:]+?)\s*:\s*(.*)$/)
       if (!m) return null
@@ -787,13 +809,26 @@ export default {
       const block = buildInsertBlock(row)
       return withWriteLock(async () => {
         if (oldAbs !== newAbs) {
-          let c = await readPatch(oldAbs)
+          // Level migration: remove from the old file, insert into the new one.
+          // Not atomic, so keep the old content and restore it if the second
+          // write fails — losing the entry is worse than a transient dup.
+          const origOld = await readPatch(oldAbs)
+          let c = origOld
           c = removeEntryAll(c, id)
-          await writePatch(oldAbs, c)
+          try {
+            await writePatch(oldAbs, c)
+          } catch (e) {
+            return { ok: false, error: '写入失败: ' + message(e) }
+          }
           let c2 = await readPatch(newAbs)
           c2 = appendBlock(c2, block)
           if (cur.disabled) c2 = appendBlock(c2, buildDisableBlock(id, true))
-          await writePatch(newAbs, c2)
+          try {
+            await writePatch(newAbs, c2)
+          } catch (e) {
+            try { await writePatch(oldAbs, origOld) } catch (e2) { /* best effort */ }
+            return { ok: false, error: '写入失败（已回滚）: ' + message(e) }
+          }
         } else {
           let c = await readPatch(newAbs)
           c = removeEntryAll(c, id)
@@ -815,6 +850,11 @@ export default {
       return withWriteLock(async () => {
         let c = await readPatch(abs)
         if (enabled) {
+          // Drop every `disabled: true` override for this id. If the insert row
+          // itself still says disabled (e.g. user hand-edited it), append an
+          // explicit `disabled: false` override so the effective state flips.
+          // Enable overrides are intentionally left in place — they are the
+          // mechanism that lets a disabled-by-default row be turned on.
           c = removeMarked(c, id, 'disable')
           const { rows } = parseRows(c)
           const row = rows.find((r) => r.id === id)
@@ -839,23 +879,26 @@ export default {
         c = removeMarked(c, id, 'enable')
         c = appendBlock(c, buildDisableBlock(id, true))
         await writePatch(abs, c)
+        const warnings: string[] = []
         if (pluginInventory) {
-          await waitFor(async () => {
+          const off = await waitFor(async () => {
             const e = await liveEntry(id)
             return e ? e.enabled === false : false
           }, 5000, 300)
+          if (!off) warnings.push('loader 未在 5 秒内停用该服务')
         }
         await wait(1000)
         c = await readPatch(abs)
         c = removeMarked(c, id, 'disable')
         await writePatch(abs, c)
         if (pluginInventory) {
-          await waitFor(async () => {
+          const on = await waitFor(async () => {
             const e = await liveEntry(id)
             return e ? e.enabled === true : false
           }, 5000, 300)
+          if (!on) warnings.push('loader 未在 5 秒内重新启用该服务')
         } else await wait(1500)
-        return { ok: true }
+        return warnings.length ? { ok: true, warning: warnings.join('；') } : { ok: true }
       })
     }
 
@@ -909,19 +952,22 @@ export default {
         const norm = normalizeImportItem(item)
         if (!norm.ok) { skipped.push({ id: (item && (item.id || item.serverName)) || '?', reason: norm.error }); continue }
         const row = norm.row
-        const existing = await collectAll()
-        if (existing.ids.has(row.id)) { skipped.push({ id: row.id, reason: 'id 已存在' }); continue }
-        if (existing.serverNames.has(row.serverName)) { skipped.push({ id: row.id, reason: 'serverName 已存在' }); continue }
-        const abs = row.level === 'global' ? p.globalPatch : p.projectPatch
-        const res: { ok: boolean; error?: string } | null = await withWriteLock(async () => {
+        // Existence checks run INSIDE the write lock so two concurrent imports
+        // (or an import racing an add) cannot both pass the same-id/same-name
+        // check and duplicate rows (TOCTOU).
+        const res = await withWriteLock(async () => {
+          const existing = await collectAll()
+          if (existing.ids.has(row.id)) return { skipped: true, reason: 'id 已存在' }
+          if (existing.serverNames.has(row.serverName)) return { skipped: true, reason: 'serverName 已存在' }
+          const abs = row.level === 'global' ? p.globalPatch : p.projectPatch
           let c = await readPatch(abs)
           c = appendBlock(c, buildInsertBlock(row))
           if (row.disabled) c = appendBlock(c, buildDisableBlock(row.id, true))
           await writePatch(abs, c)
-          return { ok: true }
+          return { added: true }
         })
-        if (res && res.ok) added.push(row.id)
-        else skipped.push({ id: row.id, reason: (res && res.error) || '写入失败' })
+        if (res.added) added.push(row.id)
+        else skipped.push({ id: row.id, reason: (res && res.reason) || '写入失败' })
       }
       return { ok: true, added, skipped }
     }
@@ -1025,9 +1071,18 @@ export default {
 
     // ---------- HTTP API route (UI half), registered defensively ----------
     if (webServer) {
+      // Cap request bodies (1 MiB) — the API has no legitimate large payloads,
+      // and unbounded buffering would let a local attacker exhaust memory.
+      const MAX_BODY = 1024 * 1024
       const readBody = (req: HttpReq) => new Promise<string>((resolve, reject) => {
         const chunks: string[] = []
-        req.on('data', (c) => chunks.push(String(c)))
+        let size = 0
+        req.on('data', (c) => {
+          const s = String(c)
+          size += s.length
+          if (size > MAX_BODY) { reject(new Error('request body too large')); return }
+          chunks.push(s)
+        })
         req.on('end', () => resolve(chunks.join('')))
         req.on('error', reject)
       })
@@ -1077,8 +1132,20 @@ export default {
             res.writeHead(200, { 'content-type': 'application/json' })
             try {
               let payload: any = {}
-              try { payload = JSON.parse((await readBody(req)) || '{}') } catch (e) { /* fallthrough */ }
+              try {
+                payload = JSON.parse((await readBody(req)) || '{}')
+              } catch (e) {
+                if (String((e as Error)?.message).includes('body too large')) {
+                  res.end(JSON.stringify({ ok: false, error: '请求体过大' }))
+                  return
+                }
+                /* otherwise fall through with {} */
+              }
               const op = String(payload.op || '')
+              if (TOKEN && WRITE_OPS.has(op) && hdr('x-dsh-token') !== TOKEN) {
+                res.end(JSON.stringify({ ok: false, error: '缺少或错误的访问令牌（x-dsh-token）' }))
+                return
+              }
               const fn = handlers[op]
               if (!fn) {
                 res.end(JSON.stringify({ ok: false, error: '未知操作: ' + op }))

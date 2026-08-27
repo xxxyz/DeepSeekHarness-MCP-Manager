@@ -126,6 +126,7 @@ dsh plugin --profile web remove @xxxyz/dsh-mcp-manager
 | 字段 | 说明 |
 |---|---|
 | `version` | loader 行 `config.version`，仅用于触发 HMR 重应用；官方通道安装下由 bundle 自动管理，无需手动修改。 |
+| `token` | **可选**访问令牌（写操作鉴权，纵深防御）。设置后写操作（增删改/启停/重启/导入导出/技能停用）须带 `x-dsh-token: <token>` 头；设置页提供令牌输入框（保存在浏览器 localStorage）。也可用环境变量 `DSH_MCP_MANAGER_TOKEN` 配置。默认关闭。 |
 
 loader 行必须为 **`insert` 块**形式（DSH patch 方言中普通 `- id:` 行只是对已存在条目的覆盖，无法新增插件）：
 
@@ -133,6 +134,8 @@ loader 行必须为 **`insert` 块**形式（DSH patch 方言中普通 `- id:` �
 - insert:
     - id: dsh-mcp-manager
       name: '@xxxyz/dsh-mcp-manager'
+      config:
+        token: 你的访问令牌   # 可选：开启写操作鉴权
 ```
 
 > 无需手动写这行——`dsh plugin add` 的 bundle patch 会自动插入（见 `cordis.patch.yml`）。

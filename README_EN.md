@@ -127,6 +127,7 @@ Configuration of the plugin itself on its loader row:
 | Field | Description |
 |---|---|
 | `version` | The loader row's `config.version`, only used to trigger an HMR re-apply; auto-managed by the bundle channel — no manual edits needed. |
+| `token` | **Optional** access token (write-op auth, defense in depth). When set, state-changing ops (add/edit/remove/enable/restart/import/export/skill-toggle) require the `x-dsh-token: <token>` header; the settings pages provide a token input (stored in browser localStorage). Can also be set via the `DSH_MCP_MANAGER_TOKEN` env var. Off by default. |
 
 The loader row must be an **`insert` block** (in DSH's patch dialect a plain `- id:` row only overrides existing entries and can never add a new plugin):
 
@@ -134,6 +135,8 @@ The loader row must be an **`insert` block** (in DSH's patch dialect a plain `- 
 - insert:
     - id: dsh-mcp-manager
       name: '@xxxyz/dsh-mcp-manager'
+      config:
+        token: your-access-token   # optional: enable write-op auth
 ```
 
 > You don't need to write this row manually — `dsh plugin add` inserts it automatically via the bundle patch (see `cordis.patch.yml`).

@@ -27,7 +27,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "lint": "node --check lib/client.js && node --check lib/index.js"
   },
   "keywords": [
     "dsh",
