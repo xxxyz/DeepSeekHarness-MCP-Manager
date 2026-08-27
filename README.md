@@ -79,61 +79,16 @@ dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
 也可把 `~/.dsh/profiles/web/package.json` 里的版本号改高后 `pnpm install`。改完**硬刷新浏览器**（Cmd/Ctrl+Shift+R）即可（client 改动无需重启 DSH）。
 
 <details>
-<summary><b>从源码安装 / 开发</b>（可选，替代 npm 方式）</summary>
-
-调试本地改动或跟随开发分支时，用 tarball 走官方通道（真复制，非符号链接）：
-
-```text
-1. git clone https://github.com/xxxyz/DeepSeekHarness-MCP-Manager.git
-cd DeepSeekHarness-MCP-Manager && npm install && npm run build
-2. npm pack                               # 生成 xxyz-dsh-mcp-manager-<版本>.tgz
-3. dsh plugin --profile web add ./xxxyz-dsh-mcp-manager-<版本>.tgz
-4. 硬刷新浏览器（Cmd/Ctrl+Shift+R）
-```
-
-更新：`git pull && npm install && npm run build && npm pack` → 重新 `dsh plugin add <tgz>`。切回 npm 通道时，把依赖改回 `"@xxxyz/dsh-mcp-manager": "^2.0.6"` 再 `pnpm install`。
-
-</details>
-
-<details>
-<summary><b>脚本安装</b>（旧通道：无 pnpm / 旧版 DSH 兼容）</summary>
-
-```sh
-npx -y @xxxyz/dsh-mcp-manager                    # 一键（npx 方式，Windows / macOS / Linux）
-# 或 npm 全局：npm i -g @xxxyz/dsh-mcp-manager && dsh-mcp-manager
-```
-
-脚本会：① 复制到 `local-packages/`（真源备份，DSH 升级不动它）② 复制到 `profiles/node_modules/`（普通复制而非软链接）③ 幂等追加 loader 行到 `cordis.patch.yml`。所有参数照常透传：`npx -y @xxxyz/dsh-mcp-manager --dsh-home /path/.dsh --profile web --repair --port 3080`。
-
-> ⚠️ 脚本通道与 `dsh plugin add` 通道**不要混用**，否则会双挂载（页面出现两个 MCP 页签 / 工具重复）。
-
-</details>
-
-<details>
 <summary><b>常见问题</b></summary>
 
 | 现象 | 原因与解决 |
 |---|---|
 | 装完设置里没有「MCP 管理」 | 硬刷新（Cmd/Ctrl+Shift+R）；仍没有就重启 DSH 一次。 |
-| 页面出现**两个 MCP 页签 / 工具重复** | 双挂载：同时用了脚本安装与 `dsh plugin add`。卸载其中一种（删掉 `cordis.patch.yml` 里的 loader 行，或 `dsh.profile.bundles` 条目）。 |
-| DSH 升级后工具消失 | 脚本通道跑一次 `--repair`（见下方「DSH 升级后」）。 |
-| `npx` / `npm view` 报 404 | 国内镜像（npmmirror）同步有延迟：加 `--registry=https://registry.npmjs.org` 或稍等再试。 |
+| 页面出现**两个 MCP 页签 / 工具重复** | 双挂载：同时存在旧的 loader 行与新的 bundle 条目。删掉 `cordis.patch.yml` 里的旧 loader 行，或 `dsh.profile.bundles` 里的条目，重启 DSH。 |
+| 之前用旧方式装过，现在想升级 | 新版 bundle 自带防双挂载 guard，直接 `dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest` 不会重复挂载。要切到新代码：删掉 `~/.dsh/profiles/web/cordis.patch.yml` 里的 `- id: mcp-manager` 行，再删 `local-packages/dsh-mcp-manager` 与 `profiles/node_modules/dsh-mcp-manager` 两个副本，重启 DSH。 |
 | 提示 `dsh: command not found` | 先安装 DSH；或直接用 `npx -y --package @deepseek-ai/dsh dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest`。 |
+| `npm view` 报 404 | 国内镜像（npmmirror）同步有延迟：加 `--registry=https://registry.npmjs.org` 或稍等再试。 |
 | 修改配置后未生效 | 所有修改走 HMR 热应用，等 1–2 秒自动刷新；页面会自动轮询。 |
-
-</details>
-
-<details>
-<summary><b>DSH 升级后：--repair</b></summary>
-
-（脚本通道）DSH 升级（或 HMR 状态异常）后若 **设置里没有「MCP 管理」** 或 **`mcp_manager_*` 工具消失**，运行一次修复命令：重新部署 → 递增 loader 行 `config.version`（触发 HMR 重应用）→ 轮询 API 直到 `{ok:true}`（默认 30 秒）。
-
-```sh
-node dsh-mcp-manager/install.mjs --repair --port 3080
-# PowerShell: .\install.ps1 -Repair -Port 3080    bash: ./install.sh --repair --port 3080
-```
-
-仍不恢复则重启一次 DSH（loader 启动时重新导入）。
 
 </details>
 
@@ -141,11 +96,10 @@ node dsh-mcp-manager/install.mjs --repair --port 3080
 <summary><b>卸载</b></summary>
 
 ```sh
-dsh plugin --profile web remove @xxxyz/dsh-mcp-manager     # 官方通道
-# 脚本通道：dsh-mcp-manager-uninstall（npm -g）或 .\uninstall.ps1 | ./uninstall.sh | node uninstall.mjs
+dsh plugin --profile web remove @xxxyz/dsh-mcp-manager
 ```
 
-然后重启 DSH。脚本卸载会删除部署副本、`local-packages` 真源，并清理 loader 行（补丁保持合法）。
+然后重启 DSH。
 
 </details>
 
@@ -164,24 +118,23 @@ dsh plugin --profile web remove @xxxyz/dsh-mcp-manager     # 官方通道
 
 | 字段 | 说明 |
 |---|---|
-| `version` | loader 行 `config.version`。`--repair` 会将其递增以强制 HMR 重应用，无需手动修改。 |
+| `version` | loader 行 `config.version`，仅用于触发 HMR 重应用；官方通道安装下由 bundle 自动管理，无需手动修改。 |
 
 loader 行必须为 **`insert` 块**形式（DSH patch 方言中普通 `- id:` 行只是对已存在条目的覆盖，无法新增插件）：
 
 ```yaml
 - insert:
     - id: dsh-mcp-manager
-      name: dsh-mcp-manager
-      config:
-        version: 1
+      name: '@xxxyz/dsh-mcp-manager'
 ```
+
+> 无需手动写这行——`dsh plugin add` 的 bundle patch 会自动插入（见 `cordis.patch.yml`）。
 
 ## 🏗️ 架构
 
 - **宿主端**（`src/index.ts` → `lib/index.js`，对象形态 Cordis 插件 `{name, inject, apply}`）：`inject` 声明 `timer/fs/settings/sandboxPolicy/webServer/tools`，框架保证就绪并在依赖消失时自动重载——这是插件跨 DSH 升级存活的机制。注册 4 个模型工具（`ctx.tools.register(defineTool(...))`）与精确路由 `POST /dsh-mcp-manager/api`（`ctx.effect` 作用域化清理）；对 `cordis.patch.yml` 做行级 CRUD（迷你 YAML 解析 + 按文件写锁）。
 - **浏览器端**（`lib/client.js`，ModuleLoader CJS bundle）：注册 设置 → MCP 管理 页（`settings.section` 槽位，order 16），经同源 `fetch('/dsh-mcp-manager/api')` 与宿主通信，不直接访问文件系统。
-- **loader 行**：写入 profile 的 `cordis.patch.yml`，client-modules 服务扫描启用的条目并下发客户端 bundle。
-- **安装器**：`install.mjs`（跨平台核心）/ `install.ps1` / `install.sh` + 对应的 `uninstall.*`；npm 包 `@xxxyz/dsh-mcp-manager` 的 bin 直接执行安装器（`dsh-mcp-manager` / `dsh-mcp-manager-uninstall`）。
+- **loader 行**：由 `dsh plugin add` 的 bundle patch 自动插入，client-modules 服务扫描启用的条目并下发客户端 bundle。
 
 ## 🛠️ 开发
 

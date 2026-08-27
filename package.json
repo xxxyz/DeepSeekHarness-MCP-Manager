@@ -1,7 +1,7 @@
 {
   "name": "@xxxyz/dsh-mcp-manager",
   "version": "2.0.6",
-  "description": "DSH-standard MCP manager plugin: Settings UI + HTTP API + model-facing mcp_manager_* tools. Composed as a loader entry, survives restarts. Install via npx, PowerShell, bash or node.",
+  "description": "DSH-standard MCP manager plugin: Settings UI + HTTP API + model-facing mcp_manager_* tools. Install with one command: dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -9,22 +9,11 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
-  "bin": {
-    "dsh-mcp-manager": "install.mjs",
-    "dsh-mcp-manager-uninstall": "uninstall.mjs"
-  },
   "files": [
     "lib",
     "cordis.patch.yml",
-    "install.mjs",
-    "uninstall.mjs",
-    "install.ps1",
-    "install.sh",
-    "uninstall.ps1",
-    "uninstall.sh",
     "README.md",
     "README_EN.md",
-    "安装方式.md",
     "LICENSE"
   ],
   "engines": {

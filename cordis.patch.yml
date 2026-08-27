@@ -1,7 +1,23 @@
-# Bundle patch layer for `dsh plugin add` installs: pnpm installs the scoped
-# package as @xxxyz/dsh-mcp-manager, so the insert row names the scoped
-# package. The loader-entry installer (install.mjs) mounts the same plugin
-# under `dsh-mcp-manager` — both names are registered by the client bundle.
+# Bundle patch layer for the official CLI install:
+#
+#   dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
+#
+# `dsh plugin add` reconciles `dsh.profile.bundles` against installed packages
+# and, seeing the `dsh.bundle.patch` declaration in package.json, appends
+# `@xxxyz/dsh-mcp-manager` to the bundle stack. The profile boot then merges
+# THIS patch (a single `insert` of the plugin row). No profile file edits
+# needed — one command installs and mounts.
+#
+# Double-mount guard: a legacy loader row (the removed install.mjs channel,
+# id `mcp-manager`, name `dsh-mcp-manager`) or an aggregate bundle may already
+# mount this plugin under a different entry id. Two mounts both register the
+# /dsh-mcp-manager/api route and fail the whole plugin tree at boot
+# ("duplicate prefix route"). The `!!js` disabled expression backs THIS row
+# off when another *enabled* entry already mounts the plugin; the existing
+# instance then owns the API. The loader evaluates the expression at entry
+# activation — the full entry tree is composed by then, so user-layer
+# (profile cordis.patch.yml) rows are visible too.
 - insert:
     - id: dsh-mcp-manager
       name: '@xxxyz/dsh-mcp-manager'
+      disabled: !!js "[...ctx.loader.entries()].some((e) => !e.disabled && e.options.id !== 'dsh-mcp-manager' && (e.options.name === 'dsh-mcp-manager' || e.options.name === '@xxxyz/dsh-mcp-manager'))"

@@ -79,61 +79,16 @@ dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
 Or bump the version in `~/.dsh/profiles/web/package.json` and run `pnpm install`. Hard-refresh the browser afterwards (Cmd/Ctrl+Shift+R) — client changes are hot-reloaded; only host-half changes need a restart.
 
 <details>
-<summary><b>Build from source / develop</b> (optional, alternative to npm)</summary>
-
-To develop locally or follow the dev branch, build a tarball and install through the official channel (real copy, not a symlink):
-
-```text
-1. git clone https://github.com/xxxyz/DeepSeekHarness-MCP-Manager.git
-cd DeepSeekHarness-MCP-Manager && npm install && npm run build
-2. npm pack                               # produces xxyz-dsh-mcp-manager-<version>.tgz
-3. dsh plugin --profile web add ./xxxyz-dsh-mcp-manager-<version>.tgz
-4. hard-refresh the browser (Cmd/Ctrl+Shift+R)
-```
-
-Update: `git pull && npm install && npm run build && npm pack` → re-run `dsh plugin add <tgz>`. To switch back to the npm channel, change the dependency in `~/.dsh/profiles/web/package.json` to `"@xxxyz/dsh-mcp-manager": "^2.0.6"` and `pnpm install`.
-
-</details>
-
-<details>
-<summary><b>Script install</b> (legacy: for environments without pnpm / old DSH)</summary>
-
-```sh
-npx -y @xxxyz/dsh-mcp-manager                    # one-shot (npx, Windows / macOS / Linux)
-# or global npm: npm i -g @xxxyz/dsh-mcp-manager && dsh-mcp-manager
-```
-
-The installer ① copies the package to `local-packages/` (source of record, untouched by DSH upgrades) ② copies it into `profiles/node_modules/` (a plain copy, not a symlink) ③ appends the loader row to `cordis.patch.yml` (idempotent). All flags pass through: `npx -y @xxxyz/dsh-mcp-manager --dsh-home /path/.dsh --profile web --repair --port 3080`.
-
-> ⚠️ **Do not mix** the script channel with the `dsh plugin add` channel — that causes a double mount (two MCP tabs / duplicated tools).
-
-</details>
-
-<details>
 <summary><b>FAQ</b></summary>
 
 | Symptom | Cause & fix |
 |---|---|
 | No "MCP 管理" in Settings after install | Hard-refresh (Cmd/Ctrl+Shift+R); if still missing, restart DSH once. |
-| **Two MCP tabs / duplicated tools** | Double mount: both the script install and `dsh plugin add` were used. Remove one (delete the loader row from `cordis.patch.yml`, or the `dsh.profile.bundles` entry). |
-| Tools missing after a DSH upgrade | (Script channel) run `--repair` (see below). |
-| `npx` / `npm view` reports 404 | Local mirror (npmmirror) sync lag: add `--registry=https://registry.npmjs.org` or wait a moment. |
+| **Two MCP tabs / duplicated tools** | Double mount: both a legacy loader row and the new bundle entry exist. Delete the old loader row from `cordis.patch.yml`, or the `dsh.profile.bundles` entry, then restart DSH. |
+| Upgrading from a legacy script install | The new bundle has a built-in double-mount guard — `dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest` won't crash. To actually switch to the new code: remove the old `- id: mcp-manager` row from `~/.dsh/profiles/web/cordis.patch.yml`, delete `local-packages/dsh-mcp-manager` and `profiles/node_modules/dsh-mcp-manager`, then restart DSH. |
 | `dsh: command not found` | Install DSH first, or use `npx -y --package @deepseek-ai/dsh dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest`. |
+| `npm view` reports 404 | Local mirror (npmmirror) sync lag: add `--registry=https://registry.npmjs.org` or wait a moment. |
 | Config changes don't take effect | All changes apply via HMR within 1–2 s; the page auto-polls. |
-
-</details>
-
-<details>
-<summary><b>After a DSH upgrade: --repair</b></summary>
-
-(Script channel) If a DSH upgrade (or a broken HMR state) leaves the settings page or the `mcp_manager_*` tools missing, run one repair command: redeploy → bump the loader row's `config.version` (forces an HMR re-apply) → poll the API until `{ok:true}` (default 30 s).
-
-```sh
-node dsh-mcp-manager/install.mjs --repair --port 3080
-# PowerShell: .\install.ps1 -Repair -Port 3080    bash: ./install.sh --repair --port 3080
-```
-
-If the API still does not answer, restart DSH once (the loader re-imports at boot).
 
 </details>
 
@@ -141,11 +96,10 @@ If the API still does not answer, restart DSH once (the loader re-imports at boo
 <summary><b>Uninstall</b></summary>
 
 ```sh
-dsh plugin --profile web remove @xxxyz/dsh-mcp-manager     # official channel
-# Script channel: dsh-mcp-manager-uninstall (npm -g) or .\uninstall.ps1 | ./uninstall.sh | node uninstall.mjs
+dsh plugin --profile web remove @xxxyz/dsh-mcp-manager
 ```
 
-Then restart DSH. The script uninstall removes the deployed copy, the `local-packages` source, and the loader row (the patch stays a valid array).
+Then restart DSH.
 
 </details>
 
@@ -164,24 +118,23 @@ Configuration of the plugin itself on its loader row:
 
 | Field | Description |
 |---|---|
-| `version` | The loader row's `config.version`. `--repair` increments it to force an HMR re-apply; no manual edits needed. |
+| `version` | The loader row's `config.version`, only used to trigger an HMR re-apply; auto-managed by the bundle channel — no manual edits needed. |
 
 The loader row must be an **`insert` block** (in DSH's patch dialect a plain `- id:` row only overrides existing entries and can never add a new plugin):
 
 ```yaml
 - insert:
     - id: dsh-mcp-manager
-      name: dsh-mcp-manager
-      config:
-        version: 1
+      name: '@xxxyz/dsh-mcp-manager'
 ```
+
+> You don't need to write this row manually — `dsh plugin add` inserts it automatically via the bundle patch (see `cordis.patch.yml`).
 
 ## 🏗️ Architecture
 
 - **Host half** (`src/index.ts` → `lib/index.js`, an object-form Cordis plugin `{name, inject, apply}`): `inject` declares `timer/fs/settings/sandboxPolicy/webServer/tools` — the framework guarantees they are ready and reloads the plugin if one disappears, which is how the plugin survives DSH upgrades. Registers four model tools (`ctx.tools.register(defineTool(...))`) and the exact route `POST /dsh-mcp-manager/api` (scoped cleanup via `ctx.effect`); line-level CRUD on `cordis.patch.yml` (mini YAML parser + per-file write lock).
 - **Browser half** (`lib/client.js`, ModuleLoader CJS bundle): registers the Settings → MCP 管理 page (`settings.section` slot, order 16) and talks to the host through same-origin `fetch('/dsh-mcp-manager/api')` — it never touches the filesystem directly.
-- **Loader row**: written into the profile's `cordis.patch.yml`; the client-modules service scans enabled entries and serves the client bundle.
-- **Installers**: `install.mjs` (cross-platform core) / `install.ps1` / `install.sh`, plus matching `uninstall.*`; the npm package `@xxxyz/dsh-mcp-manager` exposes them as bins (`dsh-mcp-manager` / `dsh-mcp-manager-uninstall`).
+- **Loader row**: inserted automatically by `dsh plugin add`'s bundle patch; the client-modules service scans enabled entries and serves the client bundle.
 
 ## 🛠️ Development
 
