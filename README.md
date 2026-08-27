@@ -4,7 +4,7 @@
 <div align="center">
   <b style="font-size: 1.15em;">DeepSeek Harness 的 MCP 服务管理器：装没装、连没连、一页管完。</b><br /><br />
   <code>服务器列表</code> <code>新增 / 编辑 / 删除</code> <code>启用 / 停用</code> <code>重启</code> <code>工具数健康</code> <code>JSON 导出 / 导入</code><br />
-  <code>4 个模型工具</code> <code>HTTP API</code> <code>npx / npm / dsh plugin / 脚本</code><br /><br />
+  <code>4 个模型工具</code> <code>HTTP API</code> <code>dsh plugin 一条命令</code><br /><br />
   <b>设置 → MCP 管理</b> 管理项目级与全局 <code>cordis.patch.yml</code> 中的 <code>@deepseek-ai/dsh-mcp-client</code> 行——<br />
   无需再手改配置文件，所有修改即改即生效（HMR 热应用），重启、升级后依然存在。
 </div>
@@ -43,88 +43,90 @@
 - **📦 备份 / 恢复**：JSON 导出 / 导入，合并新增、已存在自动跳过
 - **🤖 模型工具**：宿主注册 4 个 `mcp_manager_*` 工具，模型可直接查询与操作 MCP 服务
 - **🌐 HTTP API**：`POST /dsh-mcp-manager/api`（JSON `{op, args}` → `{ok, ...}`），供客户端与脚本调用。带跨站（CSRF）防护：仅接受 POST、必须携带 `x-dsh-plugin: dsh-mcp-manager` 请求头、校验同源 Origin（curl 等本地脚本无需 Origin）
-- **📦 跨平台安装**：Windows / macOS / Linux 一条命令（npx / npm / `dsh plugin` / 脚本）
+- **📦 一键安装**：`dsh plugin --profile web add` 一条命令装包 + 自动挂载（Windows / macOS / Linux）
 
 ## 🚀 安装
 
-**前置**：DSH 已装好（`dsh web` 能正常运行），Node.js ≥ 18。
+**前置**：已装好 DSH（`dsh web` 能正常运行），Node.js ≥ 18、pnpm ≥ 9。
 
-### 方式一 · npx 一条命令（推荐）
+### 方式一 · dsh 命令安装（推荐）
 
-```sh
-npx -y @xxxyz/dsh-mcp-manager
-```
-
-所有参数照常透传：`npx -y @xxxyz/dsh-mcp-manager --dsh-home /path/.dsh --profile web --repair --port 3080`。
-
-### 方式二 · npm 全局安装（适合经常使用）
+一条命令装包 + **自动挂载**（`dsh.bundle.patch` 机制，无需手动改任何配置文件）：
 
 ```sh
-npm i -g @xxxyz/dsh-mcp-manager
-dsh-mcp-manager                  # 安装插件
-dsh-mcp-manager-uninstall        # 卸载插件
-npm i -g @xxxyz/dsh-mcp-manager@latest   # 升级
+dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
 ```
 
-### 方式三 · dsh 命令安装（bundle 方式）
+装完**硬刷新浏览器**（Cmd/Ctrl+Shift+R）即可看到 **设置 → MCP 管理**（DSH 对 client 改动热加载，无需重启；仅 host 半更新时需要重启）。
+
+### 方式二 · 让 DSH 自己装
+
+把下面这段提示词发给任意一个 DSH 会话：
+
+```text
+帮我安装 dsh-mcp-manager 插件（DSH MCP 服务管理器），步骤：
+1. 执行 dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
+2. 完成后提醒我硬刷新浏览器（Cmd/Ctrl+Shift+R）
+遇到报错先查 https://github.com/xxxyz/DeepSeekHarness-MCP-Manager README 的常见问题表。
+```
+
+**更新**
 
 ```sh
-dsh plugin --profile web add @xxxyz/dsh-mcp-manager
-# 或 GitHub 源（构建产物 lib/ 已入库，无需本地构建）
-dsh plugin --profile web add github:xxxyz/DeepSeekHarness-MCP-Manager
+dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
 ```
 
-### 方式四 · 免 npm 账号：GitHub 直拉
-
-```sh
-npx -y github:xxxyz/DeepSeekHarness-MCP-Manager
-```
+也可把 `~/.dsh/profiles/web/package.json` 里的版本号改高后 `pnpm install`。改完**硬刷新浏览器**（Cmd/Ctrl+Shift+R）即可（client 改动无需重启 DSH）。
 
 <details>
-<summary><b>脚本安装</b>（源码方式：下载仓库后执行，幂等）</summary>
+<summary><b>从源码安装 / 开发</b>（可选，替代 npm 方式）</summary>
 
-**Windows（PowerShell）**：
+调试本地改动或跟随开发分支时，用 tarball 走官方通道（真复制，非符号链接）：
 
-```powershell
-.\dsh-mcp-manager\install.ps1                     # 默认 ~/.dsh + web profile
-.\dsh-mcp-manager\install.ps1 -DshHome D:\path\.dsh -Profile web
+```text
+1. git clone https://github.com/xxxyz/DeepSeekHarness-MCP-Manager.git
+cd DeepSeekHarness-MCP-Manager && npm install && npm run build
+2. npm pack                               # 生成 xxyz-dsh-mcp-manager-<版本>.tgz
+3. dsh plugin --profile web add ./xxxyz-dsh-mcp-manager-<版本>.tgz
+4. 硬刷新浏览器（Cmd/Ctrl+Shift+R）
 ```
 
-**macOS / Linux（bash）**（无执行权限先 `chmod +x dsh-mcp-manager/install.sh`）：
-
-```sh
-./dsh-mcp-manager/install.sh                      # 默认 ~/.dsh + web profile
-./dsh-mcp-manager/install.sh --dsh-home /path/.dsh --profile web
-```
-
-**任何平台直接运行**：
-
-```sh
-node dsh-mcp-manager/install.mjs [--dsh-home <path>] [--profile <name>] [--port <n>] [--repair] [--skip-patch]
-```
-
-安装脚本会：① 复制到 `local-packages/`（真源备份，DSH 升级不动它）② 复制到 `profiles/node_modules/`（普通复制而非软链接，保证 ESM 能解析 `@deepseek-ai/dsh-tools`）③ 幂等追加 loader 行（insert 块）。
+更新：`git pull && npm install && npm run build && npm pack` → 重新 `dsh plugin add <tgz>`。切回 npm 通道时，把依赖改回 `"@xxxyz/dsh-mcp-manager": "^2.0.6"` 再 `pnpm install`。
 
 </details>
 
-装完**硬刷新浏览器**（Cmd/Ctrl+Shift+R），打开 **设置 → MCP 管理** 即可看到管理页。若未出现，重启一次 DSH（host 半首次挂载需要）。
-
 <details>
-<summary><b>卸载</b></summary>
+<summary><b>脚本安装</b>（旧通道：无 pnpm / 旧版 DSH 兼容）</summary>
 
 ```sh
-dsh-mcp-manager-uninstall                          # 若用 npm -g 安装
-# 或：.\uninstall.ps1 | ./uninstall.sh | node uninstall.mjs [--dsh-home <path>] [--profile <name>]
+npx -y @xxxyz/dsh-mcp-manager                    # 一键（npx 方式，Windows / macOS / Linux）
+# 或 npm 全局：npm i -g @xxxyz/dsh-mcp-manager && dsh-mcp-manager
 ```
 
-然后重启 DSH。卸载删除部署副本、`local-packages` 真源，并清理 loader 行（补丁保持合法）。
+脚本会：① 复制到 `local-packages/`（真源备份，DSH 升级不动它）② 复制到 `profiles/node_modules/`（普通复制而非软链接）③ 幂等追加 loader 行到 `cordis.patch.yml`。所有参数照常透传：`npx -y @xxxyz/dsh-mcp-manager --dsh-home /path/.dsh --profile web --repair --port 3080`。
+
+> ⚠️ 脚本通道与 `dsh plugin add` 通道**不要混用**，否则会双挂载（页面出现两个 MCP 页签 / 工具重复）。
+
+</details>
+
+<details>
+<summary><b>常见问题</b></summary>
+
+| 现象 | 原因与解决 |
+|---|---|
+| 装完设置里没有「MCP 管理」 | 硬刷新（Cmd/Ctrl+Shift+R）；仍没有就重启 DSH 一次。 |
+| 页面出现**两个 MCP 页签 / 工具重复** | 双挂载：同时用了脚本安装与 `dsh plugin add`。卸载其中一种（删掉 `cordis.patch.yml` 里的 loader 行，或 `dsh.profile.bundles` 条目）。 |
+| DSH 升级后工具消失 | 脚本通道跑一次 `--repair`（见下方「DSH 升级后」）。 |
+| `npx` / `npm view` 报 404 | 国内镜像（npmmirror）同步有延迟：加 `--registry=https://registry.npmjs.org` 或稍等再试。 |
+| 提示 `dsh: command not found` | 先安装 DSH；或直接用 `npx -y --package @deepseek-ai/dsh dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest`。 |
+| 修改配置后未生效 | 所有修改走 HMR 热应用，等 1–2 秒自动刷新；页面会自动轮询。 |
 
 </details>
 
 <details>
 <summary><b>DSH 升级后：--repair</b></summary>
 
-DSH 升级（或 HMR 状态异常）后若 **设置里没有"MCP 管理"** 或 **`mcp_manager_*` 工具消失**，运行一次修复命令：重新部署 → 递增 loader 行 `config.version`（触发 HMR 重应用）→ 轮询 API 直到 `{ok:true}`（默认 30 秒）。
+（脚本通道）DSH 升级（或 HMR 状态异常）后若 **设置里没有「MCP 管理」** 或 **`mcp_manager_*` 工具消失**，运行一次修复命令：重新部署 → 递增 loader 行 `config.version`（触发 HMR 重应用）→ 轮询 API 直到 `{ok:true}`（默认 30 秒）。
 
 ```sh
 node dsh-mcp-manager/install.mjs --repair --port 3080
@@ -136,16 +138,14 @@ node dsh-mcp-manager/install.mjs --repair --port 3080
 </details>
 
 <details>
-<summary><b>常见问题</b></summary>
+<summary><b>卸载</b></summary>
 
-| 现象 | 原因与解决 |
-|---|---|
-| 装完设置里没有"MCP 管理" | 硬刷新（Cmd/Ctrl+Shift+R）；仍没有就重启 DSH 一次。 |
-| 页面出现**两个 MCP 页签 / 工具重复** | 双挂载：同时用了 install.mjs 与 `dsh plugin add` 两种方式。卸载其中一种（`dsh-mcp-manager-uninstall` 或删掉对应的 loader 行 / `dsh.profile.bundles` 条目）。 |
-| DSH 升级后工具消失 | 跑一次 `--repair`（见上）。 |
-| `npx` / `npm view` 报 404 | 国内镜像（npmmirror）同步有延迟：加 `--registry=https://registry.npmjs.org` 或稍等再试。 |
-| 安装脚本报错 `EPERM` | DSH 正在运行占用了文件：先退出 DSH 再装。 |
-| 修改配置后未生效 | 所有修改走 HMR 热应用，等 1–2 秒自动刷新；页面会自动轮询。 |
+```sh
+dsh plugin --profile web remove @xxxyz/dsh-mcp-manager     # 官方通道
+# 脚本通道：dsh-mcp-manager-uninstall（npm -g）或 .\uninstall.ps1 | ./uninstall.sh | node uninstall.mjs
+```
+
+然后重启 DSH。脚本卸载会删除部署副本、`local-packages` 真源，并清理 loader 行（补丁保持合法）。
 
 </details>
 

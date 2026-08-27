@@ -4,7 +4,7 @@
 <div align="center">
   <b style="font-size: 1.15em;">Manage every MCP server in DeepSeek Harness from one settings page — install, configure, monitor.</b><br /><br />
   <code>server list</code> <code>add / edit / delete</code> <code>enable / disable</code> <code>restart</code> <code>tool-count health</code> <code>JSON export / import</code><br />
-  <code>4 model tools</code> <code>HTTP API</code> <code>npx / npm / dsh plugin / scripts</code><br /><br />
+  <code>4 model tools</code> <code>HTTP API</code> <code>dsh plugin one-command</code><br /><br />
   <b>Settings → MCP 管理</b> manages <code>@deepseek-ai/dsh-mcp-client</code> rows in your project-level and
   global <code>cordis.patch.yml</code> — no hand-editing, every change applies live via HMR, survives restarts and upgrades.
 </div>
@@ -43,88 +43,90 @@
 - **📦 Backup / Restore** — JSON export / import; merges new entries, skips existing ones
 - **🤖 Model tools** — four `mcp_manager_*` tools registered on the host, so the model can query and manage MCP servers directly
 - **🌐 HTTP API** — `POST /dsh-mcp-manager/api` (JSON `{op, args}` → `{ok, ...}`) for the client and scripts. Cross-site (CSRF) protected: POST-only, requires the `x-dsh-plugin: dsh-mcp-manager` request header, and checks the Origin is same-origin (local scripts without an Origin are fine)
-- **📦 Cross-platform install** — one command on Windows / macOS / Linux (npx / npm / `dsh plugin` / scripts)
+- **📦 One-command install** — `dsh plugin --profile web add` installs and mounts automatically (Windows / macOS / Linux)
 
 ## 🚀 Install
 
-**Prerequisite**: DSH installed and running (`dsh web` works), Node.js ≥ 18.
+**Prerequisite**: DSH installed and running (`dsh web` works), Node.js ≥ 18, pnpm ≥ 9.
 
-### Method 1 · One-shot npx (recommended)
+### Method 1 · dsh command (recommended)
 
-```sh
-npx -y @xxxyz/dsh-mcp-manager
-```
-
-All flags pass through: `npx -y @xxxyz/dsh-mcp-manager --dsh-home /path/.dsh --profile web --repair --port 3080`.
-
-### Method 2 · Global npm install (for frequent use)
+One command installs the package and **auto-mounts** it (the `dsh.bundle.patch` mechanism — no manual config file edits needed):
 
 ```sh
-npm i -g @xxxyz/dsh-mcp-manager
-dsh-mcp-manager                  # install the plugin
-dsh-mcp-manager-uninstall        # uninstall the plugin
-npm i -g @xxxyz/dsh-mcp-manager@latest   # upgrade
+dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
 ```
 
-### Method 3 · dsh command (bundle)
+After installing, **hard-refresh the browser** (Cmd/Ctrl+Shift+R) and open **Settings → MCP 管理** (DSH hot-reloads client changes; a full restart is only needed for host-half changes).
+
+### Method 2 · Let DSH install it
+
+Paste this prompt into any DSH conversation:
+
+```text
+Install the dsh-mcp-manager plugin (DSH MCP server manager):
+1. Run dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
+2. When done, remind me to hard-refresh the browser (Cmd/Ctrl+Shift+R)
+If you hit an error, check https://github.com/xxxyz/DeepSeekHarness-MCP-Manager README's FAQ table.
+```
+
+**Update**
 
 ```sh
-dsh plugin --profile web add @xxxyz/dsh-mcp-manager
-# or from GitHub (build artifacts are committed, no local build needed)
-dsh plugin --profile web add github:xxxyz/DeepSeekHarness-MCP-Manager
+dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
 ```
 
-### Method 4 · No npm account: straight from GitHub
-
-```sh
-npx -y github:xxxyz/DeepSeekHarness-MCP-Manager
-```
+Or bump the version in `~/.dsh/profiles/web/package.json` and run `pnpm install`. Hard-refresh the browser afterwards (Cmd/Ctrl+Shift+R) — client changes are hot-reloaded; only host-half changes need a restart.
 
 <details>
-<summary><b>Script install</b> (source checkout; idempotent)</summary>
+<summary><b>Build from source / develop</b> (optional, alternative to npm)</summary>
 
-**Windows (PowerShell)**:
+To develop locally or follow the dev branch, build a tarball and install through the official channel (real copy, not a symlink):
 
-```powershell
-.\dsh-mcp-manager\install.ps1                     # default: ~/.dsh, web profile
-.\dsh-mcp-manager\install.ps1 -DshHome D:\path\.dsh -Profile web
+```text
+1. git clone https://github.com/xxxyz/DeepSeekHarness-MCP-Manager.git
+cd DeepSeekHarness-MCP-Manager && npm install && npm run build
+2. npm pack                               # produces xxyz-dsh-mcp-manager-<version>.tgz
+3. dsh plugin --profile web add ./xxxyz-dsh-mcp-manager-<version>.tgz
+4. hard-refresh the browser (Cmd/Ctrl+Shift+R)
 ```
 
-**macOS / Linux (bash)** (run `chmod +x dsh-mcp-manager/install.sh` if needed):
-
-```sh
-./dsh-mcp-manager/install.sh                      # default: ~/.dsh, web profile
-./dsh-mcp-manager/install.sh --dsh-home /path/.dsh --profile web
-```
-
-**Any platform (direct)**:
-
-```sh
-node dsh-mcp-manager/install.mjs [--dsh-home <path>] [--profile <name>] [--port <n>] [--repair] [--skip-patch]
-```
-
-The installer ① copies the package to `local-packages/` (source of record, untouched by DSH upgrades) ② copies it into `profiles/node_modules/` (a plain copy, not a symlink, so ESM resolves `@deepseek-ai/dsh-tools`) ③ appends the loader row (an `insert` block, idempotent).
+Update: `git pull && npm install && npm run build && npm pack` → re-run `dsh plugin add <tgz>`. To switch back to the npm channel, change the dependency in `~/.dsh/profiles/web/package.json` to `"@xxxyz/dsh-mcp-manager": "^2.0.6"` and `pnpm install`.
 
 </details>
 
-After installing, **hard-refresh the browser** (Cmd/Ctrl+Shift+R) and open **Settings → MCP 管理**. If the page is missing, restart DSH once (the host half needs a first mount).
-
 <details>
-<summary><b>Uninstall</b></summary>
+<summary><b>Script install</b> (legacy: for environments without pnpm / old DSH)</summary>
 
 ```sh
-dsh-mcp-manager-uninstall                          # if installed via npm -g
-# or: .\uninstall.ps1 | ./uninstall.sh | node uninstall.mjs [--dsh-home <path>] [--profile <name>]
+npx -y @xxxyz/dsh-mcp-manager                    # one-shot (npx, Windows / macOS / Linux)
+# or global npm: npm i -g @xxxyz/dsh-mcp-manager && dsh-mcp-manager
 ```
 
-Then restart DSH. Uninstall removes the deployed copy, the `local-packages` source, and the loader row (the patch stays a valid array).
+The installer ① copies the package to `local-packages/` (source of record, untouched by DSH upgrades) ② copies it into `profiles/node_modules/` (a plain copy, not a symlink) ③ appends the loader row to `cordis.patch.yml` (idempotent). All flags pass through: `npx -y @xxxyz/dsh-mcp-manager --dsh-home /path/.dsh --profile web --repair --port 3080`.
+
+> ⚠️ **Do not mix** the script channel with the `dsh plugin add` channel — that causes a double mount (two MCP tabs / duplicated tools).
+
+</details>
+
+<details>
+<summary><b>FAQ</b></summary>
+
+| Symptom | Cause & fix |
+|---|---|
+| No "MCP 管理" in Settings after install | Hard-refresh (Cmd/Ctrl+Shift+R); if still missing, restart DSH once. |
+| **Two MCP tabs / duplicated tools** | Double mount: both the script install and `dsh plugin add` were used. Remove one (delete the loader row from `cordis.patch.yml`, or the `dsh.profile.bundles` entry). |
+| Tools missing after a DSH upgrade | (Script channel) run `--repair` (see below). |
+| `npx` / `npm view` reports 404 | Local mirror (npmmirror) sync lag: add `--registry=https://registry.npmjs.org` or wait a moment. |
+| `dsh: command not found` | Install DSH first, or use `npx -y --package @deepseek-ai/dsh dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest`. |
+| Config changes don't take effect | All changes apply via HMR within 1–2 s; the page auto-polls. |
 
 </details>
 
 <details>
 <summary><b>After a DSH upgrade: --repair</b></summary>
 
-If a DSH upgrade (or a broken HMR state) leaves the settings page or the `mcp_manager_*` tools missing, run one repair command: redeploy → bump the loader row's `config.version` (forces an HMR re-apply) → poll the API until `{ok:true}` (default 30 s).
+(Script channel) If a DSH upgrade (or a broken HMR state) leaves the settings page or the `mcp_manager_*` tools missing, run one repair command: redeploy → bump the loader row's `config.version` (forces an HMR re-apply) → poll the API until `{ok:true}` (default 30 s).
 
 ```sh
 node dsh-mcp-manager/install.mjs --repair --port 3080
@@ -136,16 +138,14 @@ If the API still does not answer, restart DSH once (the loader re-imports at boo
 </details>
 
 <details>
-<summary><b>FAQ</b></summary>
+<summary><b>Uninstall</b></summary>
 
-| Symptom | Cause & fix |
-|---|---|
-| No "MCP 管理" in Settings after install | Hard-refresh (Cmd/Ctrl+Shift+R); if still missing, restart DSH once. |
-| **Two MCP tabs / duplicated tools** | Double mount: both install.mjs and `dsh plugin add` were used. Remove one (run `dsh-mcp-manager-uninstall`, or delete the extra loader row / `dsh.profile.bundles` entry). |
-| Tools missing after a DSH upgrade | Run `--repair` (see above). |
-| `npx` / `npm view` reports 404 | Local mirror (npmmirror) sync lag: add `--registry=https://registry.npmjs.org` or wait a moment. |
-| Installer fails with `EPERM` | DSH is running and holds the files: quit DSH before installing. |
-| Config changes don't take effect | All changes apply via HMR within 1–2 s; the page auto-polls. |
+```sh
+dsh plugin --profile web remove @xxxyz/dsh-mcp-manager     # official channel
+# Script channel: dsh-mcp-manager-uninstall (npm -g) or .\uninstall.ps1 | ./uninstall.sh | node uninstall.mjs
+```
+
+Then restart DSH. The script uninstall removes the deployed copy, the `local-packages` source, and the loader row (the patch stays a valid array).
 
 </details>
 
