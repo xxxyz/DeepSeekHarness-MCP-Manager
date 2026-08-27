@@ -2,11 +2,11 @@
 
 <!-- Hero -->
 <div align="center">
-  <b style="font-size: 1.15em;">DeepSeek Harness 的 MCP 服务管理器：装没装、连没连、一页管完。</b><br /><br />
+  <b style="font-size: 1.15em;">DeepSeek Harness 的 MCP 服务与技能管理器：装没装、连没连、一页管完。</b><br /><br />
   <code>服务器列表</code> <code>新增 / 编辑 / 删除</code> <code>启用 / 停用</code> <code>重启</code> <code>工具数健康</code> <code>JSON 导出 / 导入</code><br />
-  <code>4 个模型工具</code> <code>HTTP API</code> <code>dsh plugin 一条命令</code><br /><br />
-  <b>设置 → MCP 管理</b> 管理项目级与全局 <code>cordis.patch.yml</code> 中的 <code>@deepseek-ai/dsh-mcp-client</code> 行——<br />
-  无需再手改配置文件，所有修改即改即生效（HMR 热应用），重启、升级后依然存在。
+  <code>Skills 浏览 / 搜索 / 停用</code> <code>4 个模型工具</code> <code>HTTP API</code> <code>dsh plugin 一条命令</code><br /><br />
+  <b>设置 → MCP 管理</b> 管理项目级与全局 <code>cordis.patch.yml</code> 中的 <code>@deepseek-ai/dsh-mcp-client</code> 行，<br />
+  <b>设置 → Skills 管理</b> 浏览并停用各来源的技能——无需再手改配置文件，所有修改即改即生效（HMR 热应用），重启、升级后依然存在。
 </div>
 
 <div align="center">
@@ -42,6 +42,7 @@
 - **🩺 健康检查**：每台服务器实时工具数与 loader 阶段，异常一目了然
 - **📦 备份 / 恢复**：JSON 导出 / 导入，合并新增、已存在自动跳过
 - **🤖 模型工具**：宿主注册 4 个 `mcp_manager_*` 工具，模型可直接查询与操作 MCP 服务
+- **🧠 技能管理**：**设置 → Skills 管理** 页列出 DSH 全部技能，按来源分组（项目级 / 运行时 / 自定义 / 用户级 / 内置 / 插件自带）并支持搜索与按 provider 折叠；一键停用 / 启用任意技能（rank-0 override provider，任何来源层级都可禁），状态持久化到 `dsh-skill-manager.json`，HMR 即时生效
 - **🌐 HTTP API**：`POST /dsh-mcp-manager/api`（JSON `{op, args}` → `{ok, ...}`），供客户端与脚本调用。带跨站（CSRF）防护：仅接受 POST、必须携带 `x-dsh-plugin: dsh-mcp-manager` 请求头、校验同源 Origin（curl 等本地脚本无需 Origin）
 - **📦 一键安装**：`dsh plugin --profile web add` 一条命令装包 + 自动挂载（Windows / macOS / Linux）
 
@@ -111,6 +112,12 @@ dsh plugin --profile web remove @xxxyz/dsh-mcp-manager
 - 每张卡片显示实时状态、连接目标与工具数；可 **启用 / 停用**、**重启**、**编辑**、**删除**。
 - **备份 / 恢复**：一键导出 JSON，或粘贴 JSON 导入（合并新增，已存在自动跳过）。
 - 页面底部显示正在编辑的补丁文件路径。
+
+打开 **设置 → Skills 管理**：
+
+- **浏览 / 搜索**：列出 DSH 全部技能，按来源分组（项目级 / 运行时 / 自定义 / 用户级 / 内置 / 插件自带），组内按 provider 折叠；搜索框实时过滤。
+- **启用 / 停用**：一键切换任意技能的启用状态——通过 rank-0 override provider（`dsh-mcp-manager-override`）实现，任何来源层级（含项目级）都能禁用。
+- **持久化**：停用状态写入 `<profileDir>/dsh-skill-manager.json`，重启后保留；改动经 HMR 即时生效。
 
 ## ⚙️ 配置
 

@@ -2,11 +2,12 @@
 
 <!-- Hero -->
 <div align="center">
-  <b style="font-size: 1.15em;">Manage every MCP server in DeepSeek Harness from one settings page — install, configure, monitor.</b><br /><br />
+  <b style="font-size: 1.15em;">Manage every MCP server and skill in DeepSeek Harness from one settings page — install, configure, monitor.</b><br /><br />
   <code>server list</code> <code>add / edit / delete</code> <code>enable / disable</code> <code>restart</code> <code>tool-count health</code> <code>JSON export / import</code><br />
-  <code>4 model tools</code> <code>HTTP API</code> <code>dsh plugin one-command</code><br /><br />
+  <code>Skills browse / search / disable</code> <code>4 model tools</code> <code>HTTP API</code> <code>dsh plugin one-command</code><br /><br />
   <b>Settings → MCP 管理</b> manages <code>@deepseek-ai/dsh-mcp-client</code> rows in your project-level and
-  global <code>cordis.patch.yml</code> — no hand-editing, every change applies live via HMR, survives restarts and upgrades.
+  global <code>cordis.patch.yml</code>; <b>Settings → Skills 管理</b> browses and disables skills from every
+  source — no hand-editing, every change applies live via HMR, survives restarts and upgrades.
 </div>
 
 <div align="center">
@@ -42,6 +43,7 @@
 - **🩺 Health check** — live tool counts and loader phase per server, problems visible at a glance
 - **📦 Backup / Restore** — JSON export / import; merges new entries, skips existing ones
 - **🤖 Model tools** — four `mcp_manager_*` tools registered on the host, so the model can query and manage MCP servers directly
+- **🧠 Skill management** — the **Settings → Skills 管理** page lists every DSH skill grouped by source (project / runtime / custom / user / built-in / plugin-bundled) with search and per-provider collapse; enable / disable any skill in one click (rank-0 override provider, so every source level including project-level is disable-able), persisted to `dsh-skill-manager.json`, applied live via HMR
 - **🌐 HTTP API** — `POST /dsh-mcp-manager/api` (JSON `{op, args}` → `{ok, ...}`) for the client and scripts. Cross-site (CSRF) protected: POST-only, requires the `x-dsh-plugin: dsh-mcp-manager` request header, and checks the Origin is same-origin (local scripts without an Origin are fine)
 - **📦 One-command install** — `dsh plugin --profile web add` installs and mounts automatically (Windows / macOS / Linux)
 
@@ -111,6 +113,12 @@ Open **Settings → MCP 管理**:
 - Each card shows live status, the connection target and the tool count; you can **enable / disable**, **restart**, **edit** and **delete**.
 - **Backup / Restore**: export the configuration as JSON with one click, or paste JSON to import (merges new entries, skips existing ones).
 - The file path being edited is shown at the bottom of the page.
+
+Open **Settings → Skills 管理**:
+
+- **Browse / Search**: lists every DSH skill grouped by source (project / runtime / custom / user / built-in / plugin-bundled), collapsed per provider; the search box filters live.
+- **Enable / Disable**: toggle any skill in one click — implemented with a rank-0 override provider (`dsh-mcp-manager-override`), so every source level (including project-level) can be disabled.
+- **Persistence**: disabled state is written to `<profileDir>/dsh-skill-manager.json`, survives restarts, and applies live via HMR.
 
 ## ⚙️ Configuration
 
