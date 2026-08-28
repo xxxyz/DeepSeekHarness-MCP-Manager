@@ -192,7 +192,7 @@ test('skill-list merges user-level filesystem skills with source user-dsh', asyn
   }
 })
 
-test('skill-toggle disables and re-enables a user-level filesystem skill by modifying SKILL.md frontmatter', async () => {
+test('skill-toggle rejects user-level filesystem skills (view-only; scoped layer cannot be overridden and sandbox blocks file writes)', async () => {
   const home = mkdtempSync(join(tmpdir(), 'dsh-skm-'))
   const skillsDir = join(home, 'user-skills')
   const md = '---\nname: my-user-skill\ndescription: A user skill\n---\nbody'
@@ -204,60 +204,54 @@ test('skill-toggle disables and re-enables a user-level filesystem skill by modi
   process.env.DSH_MCP_MANAGER_SKILLS_DIR = skillsDir
   try {
     plugin.apply(ctx)
-    // disable → SKILL.md frontmatter should gain disable flags
+    // disabling a user-level skill is rejected with a clear error
     let r = await call(ctx._route(), { op: 'skill-toggle', args: { name: 'my-user-skill', enabled: false } })
-    assert.equal(r.json.ok, true)
-    const raw = ctx._files.get(skillMdPath)
-    assert.ok(raw.includes('user-invocable: false'), 'user-invocable: false added to frontmatter')
-    assert.ok(raw.includes('disable-model-invocation: true'), 'disable-model-invocation: true added to frontmatter')
-    // scan should now see the disabled invocation
+    assert.equal(r.json.ok, false)
+    assert.match(r.json.error, /用户级技能/)
+    // SKILL.md must be untouched
+    assert.equal(ctx._files.get(skillMdPath), md, 'SKILL.md not modified')
+    // still listed (view-only)
     r = await call(ctx._route(), { op: 'skill-list', args: {} })
-    const rows = r.json.skills.filter((s) => s.name === 'my-user-skill')
-    assert.equal(rows.length, 1, 'exactly one row')
-    assert.equal(rows[0].provider, 'filesystem', 'still the filesystem row (not override)')
-    assert.equal(rows[0].invocation.modelInvocable, false)
-    assert.equal(rows[0].invocation.userInvocable, false)
-    // state file should NOT contain the user skill name (user skills bypass override state)
+    const row = r.json.skills.find((s) => s.name === 'my-user-skill')
+    assert.ok(row, 'user skill still listed')
+    assert.equal(row.provider, 'filesystem')
+    assert.equal(row.invocation.modelInvocable, true)
+    // state file must not contain the user skill name
     const stateFile = join(home, 'profiles', 'web', 'dsh-skill-manager.json')
     const stateContent = ctx._files.get(stateFile)
     assert.ok(!stateContent || !stateContent.includes('my-user-skill'), 'state file does not track user skills')
+  } finally {
+    delete process.env.DSH_MCP_MANAGER_SKILLS_DIR
+  }
+})
 
-    // enable → SKILL.md frontmatter should lose the disable flags
-    r = await call(ctx._route(), { op: 'skill-toggle', args: { name: 'my-user-skill', enabled: true } })
-    assert.equal(r.json.ok, true)
-    const raw2 = ctx._files.get(skillMdPath)
-    assert.ok(!raw2.includes('user-invocable: false'), 'user-invocable: false removed')
-    assert.ok(!raw2.includes('disable-model-invocation: true'), 'disable-model-invocation: true removed')
-    r = await call(ctx._route(), { op: 'skill-list', args: {} })
-    const enabled = r.json.skills.find((s) => s.name === 'my-user-skill')
-    assert.equal(enabled.source, 'user-dsh')
-    assert.equal(enabled.invocation.modelInvocable, true)
-    assert.equal(enabled.invocation.userInvocable, true)
-
-    // disable again, then simulate a restart: ensureRestored must migrate the
-    // old-style state entry (if present) by modifying the file instead of
-    // creating an override — the state file may still have the old entry.
-    await call(ctx._route(), { op: 'skill-toggle', args: { name: 'my-user-skill', enabled: false } })
-    // Manually seed the old-style state entry to simulate an upgrade scenario
-    const stateFile2 = join(home, 'profiles', 'web', 'dsh-skill-manager.json')
-    const oldState = { version: 1, disabledSkills: ['my-user-skill'] }
-    ctx._files.set(stateFile2, JSON.stringify(oldState))
-    // OverrideSkills should be empty (user skills don't use override)
-    // ensureRestored on a fresh ctx should migrate: file remains disabled, no override
-    const files2 = ctx._files
-    const listDir = ctx.fs.listDir
-    const ctx2 = makeCtx(home, makeSkills(), files2)
-    ctx2.fs.listDir = listDir
-    plugin.apply(ctx2)
-    r = await call(ctx2._route(), { op: 'skill-list', args: {} })
-    const restored = r.json.skills.find((s) => s.name === 'my-user-skill')
-    assert.ok(restored, 'user skill still listed after restart')
-    // must be the filesystem row (not override), and disabled
-    assert.equal(restored.provider, 'filesystem', 'still filesystem row after restart')
-    assert.equal(restored.invocation.modelInvocable, false)
-    // the old-style state entry should have been cleaned up (migrated to file-based)
-    const migratedState = JSON.parse(ctx2._files.get(stateFile2))
-    assert.ok(!migratedState.disabledSkills.includes('my-user-skill'), 'state entry migrated and cleaned up')
+test('ensureRestored drops stale user-skill state entries without writing files', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-skm-'))
+  const skillsDir = join(home, 'user-skills')
+  const md = '---\nname: my-user-skill\ndescription: A user skill\n---\nbody'
+  const files = new Map()
+  const skillMdPath = join(skillsDir, 'my-user-skill', 'SKILL.md')
+  files.set(skillMdPath, md)
+  // stale state from pre-2.2.2: a user skill disabled via the old override path
+  const stateFile = join(home, 'profiles', 'web', 'dsh-skill-manager.json')
+  files.set(stateFile, JSON.stringify({ version: 1, disabledSkills: ['my-user-skill'] }))
+  const ctx = makeCtx(home, makeSkills(), files)
+  ctx.fs.listDir = async (p) => (p === skillsDir ? [{ name: 'my-user-skill' }] : [])
+  process.env.DSH_MCP_MANAGER_SKILLS_DIR = skillsDir
+  try {
+    plugin.apply(ctx)
+    const r = await call(ctx._route(), { op: 'skill-list', args: {} })
+    assert.equal(r.json.ok, true, 'no crash during restore')
+    // file must be untouched (the sandbox blocks writing ~/.dsh/skills)
+    assert.equal(ctx._files.get(skillMdPath), md, 'SKILL.md not modified during migration')
+    // stale entry cleaned from state
+    const cleaned = JSON.parse(ctx._files.get(stateFile))
+    assert.ok(!cleaned.disabledSkills.includes('my-user-skill'), 'stale state entry migrated away')
+    // skill still listed (view-only), still enabled
+    const row = r.json.skills.find((s) => s.name === 'my-user-skill')
+    assert.ok(row, 'user skill still listed')
+    assert.equal(row.provider, 'filesystem')
+    assert.equal(row.invocation.modelInvocable, true)
   } finally {
     delete process.env.DSH_MCP_MANAGER_SKILLS_DIR
   }

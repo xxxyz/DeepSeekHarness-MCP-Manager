@@ -229,13 +229,12 @@ export default {
       let changed = false
       for (const name of await readState()) {
         if (overrideSkills.has(name)) continue
-        // Migrate pre-fix state entries: user-level skills are file-driven now
-        // (the scoped layer ignores global overrides), so rewrite the SKILL.md
-        // frontmatter and drop the stale state entry instead of creating an
-        // override that cannot shadow them.
+        // Pre-2.2.2 migration: user-level skills are view-only now. Drop any
+        // stale state entry without touching the file — the sandbox blocks
+        // writing ~/.dsh/skills from a profile plugin, and an override could
+        // never shadow the scoped-layer filesystem entry anyway.
         const userDef = await findUserSkill(name)
         if (userDef) {
-          await editUserSkillInvocation(name, false)
           changed = true
           continue
         }
@@ -255,11 +254,15 @@ export default {
     // dsh-skill-filesystem in the agent-preset SCOPED layer, which a scope-less
     // ctx.skills.snapshot({}) (global layer only) never reaches — so the
     // management page would silently hide them. Scan the directory ourselves
-    // and merge into skill-list. Toggling still goes through the rank-0
-    // override above: it shadows by NAME, so it works across layers — but
-    // ctx.skills.get(name) is also scope-less, hence the scan fallback when
-    // synthesizing the override definition. DSH_MCP_MANAGER_SKILLS_DIR
-    // overrides the directory (used by tests).
+    // and merge into skill-list.
+    //
+    // Disable/enable is NOT offered for user skills: (a) a rank-0 override in
+    // the global layer cannot shadow the scoped layer's filesystem entry
+    // (collectFresh merges layers; the nearest layer wins); (b) writing the
+    // SKILL.md frontmatter is blocked by the fs sandbox (profile plugin,
+    // workspace-write mode — ~/.dsh/skills is outside its scope). Users
+    // disable such skills by editing `user-invocable: false` in the file
+    // directly. DSH_MCP_MANAGER_SKILLS_DIR overrides the directory for tests.
     function userSkillsDir(home: string, sep: string): string {
       const env = process.env.DSH_MCP_MANAGER_SKILLS_DIR
       return env && env.trim() ? env.trim() : home + sep + 'skills'
@@ -375,35 +378,18 @@ export default {
       const skills = snap.skills.concat(extra).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
       return { ok: true, skills, complete: snap.complete !== false }
     }
-    // Toggle a USER-LEVEL filesystem skill by editing its SKILL.md frontmatter.
-    // This is the only mechanism that works: the rank-0 override provider lives
-    // in the global layer, but ctx.skills reads merge the viewing scope's chain
-    // and the scoped layer's filesystem entry WINS the duplicate name outright
-    // (collectFresh does `merged.set(name, entry)` per layer, last wins) — so an
-    // override can never hide a user skill from the / menu. Editing the source
-    // file makes the real dsh-skill-filesystem provider (which hot-reloads via
-    // its watcher) return the disabled invocation on every scope.
-    async function editUserSkillInvocation(name: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> {
-      const def = await findUserSkill(name)
-      if (!def || !def.path) return { ok: false, error: '技能不存在: ' + name }
-      const raw = await fs.readText(await fs.resolve(def.path)).catch(() => '')
-      if (!raw) return { ok: false, error: '无法读取技能文件: ' + def.path }
-      // Strip any existing invocation flags from the frontmatter block, then
-      // re-append the ones matching the requested state. Everything else —
-      // body content and other frontmatter keys — is preserved verbatim.
-      const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)
-      if (!fmMatch) return { ok: false, error: '技能文件缺少 frontmatter: ' + def.path }
-      const fmLines = fmMatch[1].split(/\r?\n/)
-      const rest = raw.slice(fmMatch[0].length)
-      const stripped = fmLines.filter((line) => !/^(user-invocable|disable-model-invocation):/i.test(line.trim()))
-      if (!enabled) {
-        stripped.push('user-invocable: false')
-        stripped.push('disable-model-invocation: true')
-      }
-      const next = '---\n' + stripped.join('\n') + '\n---' + rest
-      await fs.writeText(await fs.resolve(def.path), next)
-      return { ok: true }
-    }
+    // User-level skills (~/.dsh/skills) are VIEW-ONLY in this page. They are
+    // discovered by dsh-skill-filesystem in the agent-preset SCOPED layer; a
+    // scope-less snapshot({}) (global layer only) never sees them, so we scan
+    // the directory and merge rows into skill-list. Disable/enable is NOT
+    // supported for them: (a) the rank-0 override provider lives in the global
+    // layer and a scoped read merges the scope chain with the scoped entry
+    // winning the duplicate name outright (collectFresh last-wins), so an
+    // override cannot hide them from the / menu; (b) rewriting the SKILL.md
+    // frontmatter is blocked by the fs sandbox (profile plugin, workspace-write
+    // mode — ~/.dsh/skills is outside its scope). Users disable such skills by
+    // editing `user-invocable: false` in the file directly.
+    const USER_SKILL_VIEW_ONLY_ERROR = '用户级技能由 DSH 文件系统管理，仅支持查看；如需禁用请直接编辑 SKILL.md 的 user-invocable 字段'
     async function skillToggle(args: { name?: string; enabled?: boolean }) {
       const name = String(args.name || '').trim()
       if (!name) return { ok: false, error: '技能名不能为空' }
@@ -411,17 +397,16 @@ export default {
       await ensureRestored()
       const enabled = args.enabled !== false
       return withWriteLock(async () => {
-        // User-level skills bypass the override provider entirely — editing the
-        // SKILL.md frontmatter is what makes the real provider (and thus the
-        // / menu) see the change.
         const userDef = await findUserSkill(name)
         if (userDef) {
-          // Also drop a stale override row if one was created pre-fix.
+          // Drop any stale override row created by older versions (pre-2.2.2
+          // migration) — it can never shadow the scoped entry anyway, and the
+          // toggle for user skills is not supported.
           if (overrideSkills.delete(name)) {
             await saveState([...overrideSkills.keys()])
             skillProviderControl?.invalidate()
           }
-          return editUserSkillInvocation(name, enabled)
+          return { ok: false, error: USER_SKILL_VIEW_ONLY_ERROR }
         }
         if (enabled) {
           if (overrideSkills.delete(name)) {
