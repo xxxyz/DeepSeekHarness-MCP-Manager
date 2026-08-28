@@ -192,49 +192,72 @@ test('skill-list merges user-level filesystem skills with source user-dsh', asyn
   }
 })
 
-test('skill-toggle disables and re-enables a user-level filesystem skill', async () => {
+test('skill-toggle disables and re-enables a user-level filesystem skill by modifying SKILL.md frontmatter', async () => {
   const home = mkdtempSync(join(tmpdir(), 'dsh-skm-'))
   const skillsDir = join(home, 'user-skills')
   const md = '---\nname: my-user-skill\ndescription: A user skill\n---\nbody'
   const files = new Map()
-  files.set(join(skillsDir, 'my-user-skill', 'SKILL.md'), md)
+  const skillMdPath = join(skillsDir, 'my-user-skill', 'SKILL.md')
+  files.set(skillMdPath, md)
   const ctx = makeCtx(home, makeSkills(), files)
   ctx.fs.listDir = async (p) => (p === skillsDir ? [{ name: 'my-user-skill' }] : [])
   process.env.DSH_MCP_MANAGER_SKILLS_DIR = skillsDir
   try {
     plugin.apply(ctx)
+    // disable → SKILL.md frontmatter should gain disable flags
     let r = await call(ctx._route(), { op: 'skill-toggle', args: { name: 'my-user-skill', enabled: false } })
     assert.equal(r.json.ok, true)
+    const raw = ctx._files.get(skillMdPath)
+    assert.ok(raw.includes('user-invocable: false'), 'user-invocable: false added to frontmatter')
+    assert.ok(raw.includes('disable-model-invocation: true'), 'disable-model-invocation: true added to frontmatter')
+    // scan should now see the disabled invocation
     r = await call(ctx._route(), { op: 'skill-list', args: {} })
     const rows = r.json.skills.filter((s) => s.name === 'my-user-skill')
-    assert.equal(rows.length, 1, 'exactly one row while disabled (scan deduped against override)')
-    assert.equal(rows[0].provider, OVERRIDE)
+    assert.equal(rows.length, 1, 'exactly one row')
+    assert.equal(rows[0].provider, 'filesystem', 'still the filesystem row (not override)')
     assert.equal(rows[0].invocation.modelInvocable, false)
     assert.equal(rows[0].invocation.userInvocable, false)
+    // state file should NOT contain the user skill name (user skills bypass override state)
     const stateFile = join(home, 'profiles', 'web', 'dsh-skill-manager.json')
-    assert.ok(ctx._files.get(stateFile).includes('my-user-skill'))
+    const stateContent = ctx._files.get(stateFile)
+    assert.ok(!stateContent || !stateContent.includes('my-user-skill'), 'state file does not track user skills')
 
+    // enable → SKILL.md frontmatter should lose the disable flags
     r = await call(ctx._route(), { op: 'skill-toggle', args: { name: 'my-user-skill', enabled: true } })
     assert.equal(r.json.ok, true)
+    const raw2 = ctx._files.get(skillMdPath)
+    assert.ok(!raw2.includes('user-invocable: false'), 'user-invocable: false removed')
+    assert.ok(!raw2.includes('disable-model-invocation: true'), 'disable-model-invocation: true removed')
     r = await call(ctx._route(), { op: 'skill-list', args: {} })
     const enabled = r.json.skills.find((s) => s.name === 'my-user-skill')
     assert.equal(enabled.source, 'user-dsh')
     assert.equal(enabled.invocation.modelInvocable, true)
+    assert.equal(enabled.invocation.userInvocable, true)
 
-    // disable again, then simulate a restart with a fresh ctx + fresh skills
-    // service sharing the same files: ensureRestored must synthesize the
-    // override from the scan (ctx.skills.get cannot see the scoped layer)
+    // disable again, then simulate a restart: ensureRestored must migrate the
+    // old-style state entry (if present) by modifying the file instead of
+    // creating an override — the state file may still have the old entry.
     await call(ctx._route(), { op: 'skill-toggle', args: { name: 'my-user-skill', enabled: false } })
-    const files = ctx._files
+    // Manually seed the old-style state entry to simulate an upgrade scenario
+    const stateFile2 = join(home, 'profiles', 'web', 'dsh-skill-manager.json')
+    const oldState = { version: 1, disabledSkills: ['my-user-skill'] }
+    ctx._files.set(stateFile2, JSON.stringify(oldState))
+    // OverrideSkills should be empty (user skills don't use override)
+    // ensureRestored on a fresh ctx should migrate: file remains disabled, no override
+    const files2 = ctx._files
     const listDir = ctx.fs.listDir
-    const ctx2 = makeCtx(home, makeSkills(), files)
+    const ctx2 = makeCtx(home, makeSkills(), files2)
     ctx2.fs.listDir = listDir
     plugin.apply(ctx2)
     r = await call(ctx2._route(), { op: 'skill-list', args: {} })
     const restored = r.json.skills.find((s) => s.name === 'my-user-skill')
     assert.ok(restored, 'user skill still listed after restart')
-    assert.equal(restored.provider, OVERRIDE)
+    // must be the filesystem row (not override), and disabled
+    assert.equal(restored.provider, 'filesystem', 'still filesystem row after restart')
     assert.equal(restored.invocation.modelInvocable, false)
+    // the old-style state entry should have been cleaned up (migrated to file-based)
+    const migratedState = JSON.parse(ctx2._files.get(stateFile2))
+    assert.ok(!migratedState.disabledSkills.includes('my-user-skill'), 'state entry migrated and cleaned up')
   } finally {
     delete process.env.DSH_MCP_MANAGER_SKILLS_DIR
   }
