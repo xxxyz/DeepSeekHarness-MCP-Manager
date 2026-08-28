@@ -220,29 +220,84 @@ test('skill-toggle disables and re-enables a user-level filesystem skill', async
     const enabled = r.json.skills.find((s) => s.name === 'my-user-skill')
     assert.equal(enabled.source, 'user-dsh')
     assert.equal(enabled.invocation.modelInvocable, true)
+
+    // disable again, then simulate a restart with a fresh ctx + fresh skills
+    // service sharing the same files: ensureRestored must synthesize the
+    // override from the scan (ctx.skills.get cannot see the scoped layer)
+    await call(ctx._route(), { op: 'skill-toggle', args: { name: 'my-user-skill', enabled: false } })
+    const files = ctx._files
+    const listDir = ctx.fs.listDir
+    const ctx2 = makeCtx(home, makeSkills(), files)
+    ctx2.fs.listDir = listDir
+    plugin.apply(ctx2)
+    r = await call(ctx2._route(), { op: 'skill-list', args: {} })
+    const restored = r.json.skills.find((s) => s.name === 'my-user-skill')
+    assert.ok(restored, 'user skill still listed after restart')
+    assert.equal(restored.provider, OVERRIDE)
+    assert.equal(restored.invocation.modelInvocable, false)
   } finally {
     delete process.env.DSH_MCP_MANAGER_SKILLS_DIR
   }
 })
 
-test('user-skills scan falls back to dir name and skips invalid dirs', async () => {
+test('user-skills scan mirrors official registry: frontmatter name+description required', async () => {
   const home = mkdtempSync(join(tmpdir(), 'dsh-skm-'))
   const skillsDir = join(home, 'user-skills')
   const files = new Map()
-  files.set(join(skillsDir, 'my-fallback-skill', 'SKILL.md'), '---\ndescription: no name here\n---\nbody')
-  files.set(join(skillsDir, 'Bad_Name', 'SKILL.md'), '---\ndescription: invalid dir name\n---\nbody')
+  files.set(join(skillsDir, 'no-name-dir', 'SKILL.md'), '---\ndescription: has description but no name\n---\nbody')
+  files.set(join(skillsDir, 'no-description', 'SKILL.md'), '---\nname: no-description\n---\nbody')
+  files.set(join(skillsDir, 'Bad_Name', 'SKILL.md'), '---\nname: Bad_Name\ndescription: non kebab name\n---\nbody')
   const ctx = makeCtx(home, makeSkills(), files)
-  ctx.fs.listDir = async (p) => (p === skillsDir ? [{ name: 'my-fallback-skill' }, { name: 'Bad_Name' }] : [])
+  ctx.fs.listDir = async (p) => (p === skillsDir ? [{ name: 'no-name-dir' }, { name: 'no-description' }, { name: 'Bad_Name' }] : [])
   process.env.DSH_MCP_MANAGER_SKILLS_DIR = skillsDir
   try {
     plugin.apply(ctx)
     const r = await call(ctx._route(), { op: 'skill-list', args: {} })
     const names = r.json.skills.map((s) => s.name)
-    assert.ok(names.includes('my-fallback-skill'), 'dir-name fallback listed')
-    const fb = r.json.skills.find((s) => s.name === 'my-fallback-skill')
-    assert.equal(fb.description, 'no name here')
-    assert.equal(fb.source, 'user-dsh')
-    assert.ok(!names.includes('Bad_Name'), 'invalid dir name skipped')
+    // The real dsh-skill-filesystem ignores any entry whose frontmatter lacks
+    // name OR description (no dir-name fallback) — the page must not list
+    // skills the / menu cannot see.
+    assert.ok(!names.includes('no-name-dir'), 'missing frontmatter name → skipped (no dir fallback)')
+    assert.ok(!names.includes('no-description'), 'missing description → skipped')
+    assert.ok(!names.includes('Bad_Name'), 'non-kebab name → skipped')
+  } finally {
+    delete process.env.DSH_MCP_MANAGER_SKILLS_DIR
+  }
+})
+
+test('skill-list includes flat .md files in the user skills root (official parity)', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-skm-'))
+  const skillsDir = join(home, 'user-skills')
+  const files = new Map()
+  files.set(
+    join(skillsDir, 'flat-skill.md'),
+    '---\nname: flat-skill\ndescription: A flat markdown skill\ndisable-model-invocation: true\n---\nbody',
+  )
+  files.set(join(skillsDir, 'inv-off', 'SKILL.md'), '---\nname: inv-off\ndescription: hidden from user menu\nuser-invocable: false\n---\nbody')
+  // official provider REJECTS the legacy camelCase keys outright → entry skipped
+  files.set(join(skillsDir, 'legacy', 'SKILL.md'), '---\nname: legacy\ndescription: camel key\nuserInvocable: false\n---\nbody')
+  // official boolean grammar: true/1/yes/on vs false/0/no/off — anything else skips the entry
+  files.set(join(skillsDir, 'bad-bool', 'SKILL.md'), '---\nname: bad-bool\ndescription: bad boolean\nuser-invocable: maybe\n---\nbody')
+  const ctx = makeCtx(home, makeSkills(), files)
+  ctx.fs.listDir = async (p) => (p === skillsDir ? [{ name: 'flat-skill.md' }, { name: 'inv-off' }, { name: 'legacy' }, { name: 'bad-bool' }, { name: '.system' }] : [])
+  process.env.DSH_MCP_MANAGER_SKILLS_DIR = skillsDir
+  try {
+    plugin.apply(ctx)
+    const r = await call(ctx._route(), { op: 'skill-list', args: {} })
+    const row = r.json.skills.find((s) => s.name === 'flat-skill')
+    assert.ok(row, 'flat .md skill listed')
+    assert.equal(row.source, 'user-dsh')
+    assert.equal(row.provider, 'filesystem')
+    assert.equal(row.description, 'A flat markdown skill')
+    assert.equal(row.invocation.modelInvocable, false, 'disable-model-invocation honored')
+    assert.equal(row.invocation.userInvocable, true)
+    const invOff = r.json.skills.find((s) => s.name === 'inv-off')
+    assert.ok(invOff, 'user-invocable: false skill listed')
+    assert.equal(invOff.invocation.userInvocable, false)
+    const names = r.json.skills.map((s) => s.name)
+    assert.ok(!names.includes('legacy'), 'camelCase userInvocable key rejected (official parity)')
+    assert.ok(!names.includes('bad-bool'), 'invalid boolean value skipped (official parity)')
+    assert.ok(!names.includes('.system'), '.system entries skipped')
   } finally {
     delete process.env.DSH_MCP_MANAGER_SKILLS_DIR
   }
