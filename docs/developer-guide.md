@@ -126,7 +126,9 @@ npm publish --registry=https://registry.npmjs.org   # prepublishOnly 自动 buil
 - 本机 `~/.dsh/profiles/web/package.json` 的依赖若是本地 tarball，需改回 `@xxxyz/dsh-mcp-manager@^<版本>` 再 `pnpm install`（否则删掉 tarball 后重装会挂）。
 - 验证 `npm view @xxxyz/dsh-mcp-manager version --registry=https://registry.npmjs.org`。
 - 重启 dsh web 确认新版本生效（mcpm-list / skill-list 探测 API）。
-- **pnpm 11 minimumReleaseAge 供应链策略**：新版本发布不足 24h 时，`dsh plugin add @latest` 会**静默回退到旧版本**（`downloaded 0` + dependencies 仍写旧版 `^x.y.z`，无任何报错）。解法：把**新版本号追加进** `~/.dsh/profiles/web/pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`，且**必须用带版本号的 OR 范围形式**（`- '@xxxyz/dsh-mcp-manager@2.1.0 || 2.1.1 || 2.1.2 || 2.1.3'`）——**不带版本号的形式实测 pnpm 不认**，装不上新版本。诊断命令：`pnpm add <pkg>@latest --lockfile-only --config.minimumReleaseAge=0`（若解析到新版本即坐实是 release-age 拦截）。
+- **pnpm 11 minimumReleaseAge 供应链策略**：新版本发布不足 24h 时，`dsh plugin add @latest` 会**静默回退到旧版本**（`downloaded 0` + dependencies 仍写旧版 `^x.y.z`，无任何报错）。解法：把**新版本号追加进** `~/.dsh/profiles/web/pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`，且**必须用带版本号的 OR 范围形式**（`- '@xxxyz/dsh-mcp-manager@2.1.0 || 2.1.1 || ... || 2.1.4'`）——**不带版本号的形式实测 pnpm 不认**，装不上新版本。诊断命令：`pnpm add <pkg>@latest --lockfile-only --config.minimumReleaseAge=0`（若解析到新版本即坐实是 release-age 拦截）。
+- **pnpm packument metadata 缓存**：即使 whitelist 正确，`pnpm add @latest` 也可能仍解析到旧版本（而 `pnpm view` 已见新版本）——`%LOCALAPPDATA%\pnpm-cache\v11\metadata\registry.npmjs.org\@xxxyz\dsh-mcp-manager.jsonl` 缓存了旧 dist-tags。解法：删除该缓存（`node -e "fs.rmSync(path, {recursive:true, force:true})"`）再 `dsh plugin add`。
+- **Cordis 插件读取 loader 行 config**：entry 配置是 Cordis 调 `callback(ctx, config)` 时作为**第二参数**传给 `apply` 的（`apply(ctx, config)`）——**绝不能从 `ctx.config` 读**：它不是注入服务，访问抛 `cannot get property "config" without inject`，整个 plugin tree 启动失败（2.1.3 实测翻车、2.1.4 修复）。函数/对象形态插件相同。
 
 ## 九、维护注意
 
