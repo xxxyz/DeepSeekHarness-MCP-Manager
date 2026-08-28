@@ -1,6 +1,6 @@
 {
   "name": "@xxxyz/dsh-mcp-manager",
-  "version": "2.1.5",
+  "version": "2.2.0",
   "description": "DSH-standard MCP manager plugin: Settings UI + HTTP API + model-facing mcp_manager_* tools. Install with one command: dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest",
   "type": "module",
   "main": "lib/index.js",
