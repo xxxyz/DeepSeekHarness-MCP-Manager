@@ -109,7 +109,6 @@ interface DshContext extends Context {
   sandboxPolicy: SandboxPolicyService
   webServer: WebServerService
   skills: SkillService
-  config?: Record<string, unknown>
   timeout(delay: number): Promise<void>
 }
 
@@ -126,7 +125,7 @@ interface ManagedRow {
 export default {
   name: 'dsh-mcp-manager-host',
   inject: ['timer', 'fs', 'settings', 'sandboxPolicy', 'webServer', 'tools', 'skills'],
-  apply(ctx: DshContext) {
+  apply(ctx: DshContext, config?: Record<string, unknown>) {
     const fs = ctx.fs
     const settings = ctx.settings
     const sandboxPolicy = ctx.sandboxPolicy
@@ -148,7 +147,11 @@ export default {
     // set, every state-changing op requires `x-dsh-token: <token>`. Read-only
     // ops (plugin-version, mcpm-list, skill-list) stay open so the UI still
     // renders; mcpm-export is guarded too because it leaks full configs.
-    const TOKEN = String((ctx.config as { token?: unknown } | undefined)?.token || process.env.DSH_MCP_MANAGER_TOKEN || '').trim()
+    // NOTE: the entry config arrives as the SECOND apply argument (Cordis
+    // calls `callback(ctx, config)`) — never read it off `ctx.config`, which
+    // is not an injected service and throws "cannot get property without
+    // inject" at boot.
+    const TOKEN = String((config as { token?: unknown } | undefined)?.token || process.env.DSH_MCP_MANAGER_TOKEN || '').trim()
     const WRITE_OPS = new Set([
       'mcpm-add', 'mcpm-edit', 'mcpm-remove', 'mcpm-set-enabled', 'mcpm-restart',
       'mcpm-export', 'mcpm-import', 'skill-toggle',

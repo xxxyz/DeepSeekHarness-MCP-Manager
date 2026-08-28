@@ -203,8 +203,9 @@ test('mcpm-export returns JSON without loader-only rows', async () => {
 
 test('token gate: write ops rejected without x-dsh-token, read ops stay open', async () => {
   const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeCtx(home, undefined, { token: 'sekrit' })
-  plugin.apply(ctx)
+  const ctx = makeCtx(home)
+  // entry config arrives as the SECOND apply argument (Cordis callback(ctx, config))
+  plugin.apply(ctx, { token: 'sekrit' })
   // write op → 401 without token, ok with correct token
   let r = await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'tok1', transport: 'stdio', command: 'echo' } })
   assert.equal(r.json.ok, false)
