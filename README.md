@@ -16,12 +16,12 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js)](package.json)
 [![GitHub](https://img.shields.io/badge/GitHub-xxxyz%2FDeepSeekHarness--MCP--Manager-181717?logo=github)](https://github.com/xxxyz/DeepSeekHarness-MCP-Manager)
 [![dsh.market](https://img.shields.io/badge/dsh.market-%E2%9C%93-3fb950)](https://dsh.market)
-[![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-%E5%BE%85%E5%90%88%E5%B9%B6-ffd93d)](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/2078)
+[![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-%E5%B7%B2%E6%94%B6%E5%BD%95-3fb950)](https://awesome-dsh-plugin.com)
 
 </div>
 
 <div align="center">
-  🛒 已收录于 <a href="https://dsh.market"><b>dsh.market</b></a> · 已提交 <a href="https://awesome-dsh-plugin.com"><b>awesome-dsh-plugin.com</b></a> 官方列表收录（<a href="https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/2078"><b>PR #2078</b></a> 待合并）
+  🛒 已收录于 <a href="https://dsh.market"><b>dsh.market</b></a> 与 <a href="https://awesome-dsh-plugin.com"><b>awesome-dsh-plugin.com</b></a> 官方插件列表（<a href="https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/2078"><b>PR #2078</b></a> 已合并）
 </div>
 
 <div align="center">
