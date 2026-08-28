@@ -115,8 +115,8 @@ dsh plugin --profile web remove @xxxyz/dsh-mcp-manager
 
 打开 **设置 → Skills 管理**：
 
-- **浏览 / 搜索**：列出 DSH 全部技能，按来源分组（项目级 / 运行时 / 自定义 / 用户级 / 内置 / 插件自带），组内按 provider 折叠；搜索框实时过滤。
-- **启用 / 停用**：一键切换任意技能的启用状态——通过 rank-0 override provider（`dsh-mcp-manager-override`）实现，任何来源层级（含项目级）都能禁用。
+- **浏览 / 搜索**：列出 DSH 全部技能，按来源分组（项目级 / 运行时 / 自定义 / 用户级 / 内置 / 插件自带），组内按 provider 折叠；搜索框实时过滤。`~/.dsh/skills/` 下的用户级技能（2.2.0+）同样可见——即使官方 scoped 层不向无 scope 查询暴露它们。
+- **启用 / 停用**：一键切换任意技能的启用状态——通过 rank-0 override provider（`dsh-mcp-manager-override`）实现，任何来源层级（含项目级与用户级文件系统技能）都能禁用。
 - **持久化**：停用状态写入 `<profileDir>/dsh-skill-manager.json`，重启后保留；改动经 HMR 即时生效。
 
 ## ⚙️ 配置

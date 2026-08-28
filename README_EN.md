@@ -116,8 +116,8 @@ Open **Settings → MCP 管理**:
 
 Open **Settings → Skills 管理**:
 
-- **Browse / Search**: lists every DSH skill grouped by source (project / runtime / custom / user / built-in / plugin-bundled), collapsed per provider; the search box filters live.
-- **Enable / Disable**: toggle any skill in one click — implemented with a rank-0 override provider (`dsh-mcp-manager-override`), so every source level (including project-level) can be disabled.
+- **Browse / Search**: lists every DSH skill grouped by source (project / runtime / custom / user / built-in / plugin-bundled), collapsed per provider; the search box filters live. User-level skills under `~/.dsh/skills/` (2.2.0+) are listed too — even though the official scoped layer never exposes them to scope-less queries.
+- **Enable / Disable**: toggle any skill in one click — implemented with a rank-0 override provider (`dsh-mcp-manager-override`), so every source level (including project-level and user-level filesystem skills) can be disabled.
 - **Persistence**: disabled state is written to `<profileDir>/dsh-skill-manager.json`, survives restarts, and applies live via HMR.
 
 ## ⚙️ Configuration

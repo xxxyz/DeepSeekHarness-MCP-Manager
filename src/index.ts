@@ -229,7 +229,7 @@ export default {
       let changed = false
       for (const name of await readState()) {
         if (overrideSkills.has(name)) continue
-        const def = await ctx.skills.get(name)
+        const def = (await ctx.skills.get(name)) || (await findUserSkill(name))
         if (!def) continue
         overrideSkills.set(name, { ...def, provider: OVERRIDE_PROVIDER, invocation: { modelInvocable: false, userInvocable: false } })
         changed = true
@@ -238,10 +238,83 @@ export default {
     }
     ;(ctx.on as (event: string, callback: () => void) => unknown)('skills/change', () => { void ensureRestored() })
 
+    // User-level skills (~/.dsh/skills/*/SKILL.md) are discovered by
+    // dsh-skill-filesystem in the agent-preset SCOPED layer, which a scope-less
+    // ctx.skills.snapshot({}) (global layer only) never reaches — so the
+    // management page would silently hide them. Scan the directory ourselves
+    // and merge into skill-list. Toggling still goes through the rank-0
+    // override above: it shadows by NAME, so it works across layers — but
+    // ctx.skills.get(name) is also scope-less, hence the scan fallback when
+    // synthesizing the override definition. DSH_MCP_MANAGER_SKILLS_DIR
+    // overrides the directory (used by tests).
+    function userSkillsDir(home: string, sep: string): string {
+      const env = process.env.DSH_MCP_MANAGER_SKILLS_DIR
+      return env && env.trim() ? env.trim() : home + sep + 'skills'
+    }
+
+    // Minimal SKILL.md frontmatter reader — top-level `key: value` lines inside
+    // the opening `---` block only (no nested YAML, no multiline scalars).
+    // Returns the parsed fields plus the body after the block (the skill content).
+    function parseSkillFile(raw: string): { fm: { name?: string; description?: string; whenToUse?: string; userInvocable?: boolean }; content: string } {
+      const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)
+      if (!m) return { fm: {}, content: raw }
+      const fm: { name?: string; description?: string; whenToUse?: string; userInvocable?: boolean } = {}
+      for (const line of m[1].split(/\r?\n/)) {
+        const kv = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(line.trim())
+        if (!kv) continue
+        const val = kv[2].trim().replace(/^['"]|['"]$/g, '')
+        if (kv[1] === 'name') { if (val) fm.name = val }
+        else if (kv[1] === 'description') fm.description = val
+        else if (kv[1] === 'whenToUse' || kv[1] === 'when-to-use') fm.whenToUse = val
+        else if (kv[1] === 'user-invocable' || kv[1] === 'userInvocable') fm.userInvocable = val !== 'false'
+      }
+      const content = raw.slice(m[0].length).replace(/^\r?\n+/, '')
+      return { fm, content }
+    }
+
+    async function scanUserSkills(): Promise<SkillDefinition[]> {
+      let dir: string
+      let sep: string
+      try {
+        const p = await ensurePaths()
+        sep = p.home.indexOf('\\') >= 0 ? '\\' : '/'
+        dir = userSkillsDir(p.home, sep)
+      } catch (e) { return [] }
+      let entries: Array<{ name: string }> = []
+      try { entries = await fs.listDir(await fs.resolve(dir)) } catch (e) { return [] }
+      const rows: SkillDefinition[] = []
+      for (const ent of entries) {
+        const dirName = String(ent.name || '')
+        let raw = ''
+        try { raw = await fs.readText(await fs.resolve(dir + sep + dirName + sep + 'SKILL.md')) } catch (e) { continue }
+        const { fm, content } = parseSkillFile(raw)
+        const name = String(fm.name || dirName)
+        if (!SKILL_NAME_RE.test(name)) continue
+        rows.push({
+          name,
+          description: String(fm.description || ''),
+          ...(fm.whenToUse !== undefined ? { whenToUse: fm.whenToUse } : {}),
+          invocation: { modelInvocable: true, userInvocable: fm.userInvocable !== false },
+          source: 'user-dsh',
+          provider: 'filesystem-user',
+          path: dir + sep + dirName,
+          content,
+        })
+      }
+      return rows
+    }
+
+    async function findUserSkill(name: string): Promise<SkillDefinition | undefined> {
+      return (await scanUserSkills()).find((s) => s.name === name)
+    }
+
     async function skillList() {
       await ensureRestored()
       const snap = await ctx.skills.snapshot({})
-      return { ok: true, skills: snap.skills, complete: snap.complete !== false }
+      const seen = new Set(snap.skills.map((s) => s.name))
+      const extra = (await scanUserSkills()).filter((s) => !seen.has(s.name))
+      const skills = snap.skills.concat(extra).sort((a, b) => (a.name < b.name ? -1 : 1))
+      return { ok: true, skills, complete: snap.complete !== false }
     }
     async function skillToggle(args: { name?: string; enabled?: boolean }) {
       const name = String(args.name || '').trim()
@@ -257,7 +330,7 @@ export default {
           }
         } else {
           if (!overrideSkills.has(name)) {
-            const def = await ctx.skills.get(name)
+            const def = (await ctx.skills.get(name)) || (await findUserSkill(name))
             if (!def) return { ok: false, error: '技能不存在: ' + name }
             overrideSkills.set(name, { ...def, provider: OVERRIDE_PROVIDER, invocation: { modelInvocable: false, userInvocable: false } })
             await saveState([...overrideSkills.keys()])

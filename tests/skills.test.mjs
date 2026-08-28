@@ -151,3 +151,99 @@ test('api route still enforces the CSRF gate for skill ops', async () => {
   const r = await call(ctx._route(), { op: 'skill-list', args: {} }, { 'x-dsh-plugin': 'wrong' })
   assert.equal(r.status, 403)
 })
+
+// ---------- user-level filesystem skills (~/.dsh/skills) ----------
+
+const USER_SKILL_MD = [
+  '---',
+  'name: checking-dsh-plugin-updates',
+  'description: 检查 DSH 插件更新并列出可用升级',
+  'whenToUse: Use when asked to check for DSH plugin updates',
+  'user-invocable: true',
+  '---',
+  '',
+  '# body',
+].join('\n')
+
+test('skill-list merges user-level filesystem skills with source user-dsh', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-skm-'))
+  const skillsDir = join(home, 'user-skills')
+  const files = new Map()
+  files.set(join(skillsDir, 'checking-dsh-plugin-updates', 'SKILL.md'), USER_SKILL_MD)
+  const skills = makeSkills()
+  skills.seed('brainstorming', { description: 'Idea design', source: 'superpowers', provider: 'superpowers' })
+  const ctx = makeCtx(home, skills, files)
+  ctx.fs.listDir = async (p) => (p === skillsDir ? [{ name: 'checking-dsh-plugin-updates' }] : [])
+  process.env.DSH_MCP_MANAGER_SKILLS_DIR = skillsDir
+  try {
+    plugin.apply(ctx)
+    const r = await call(ctx._route(), { op: 'skill-list', args: {} })
+    assert.equal(r.json.ok, true)
+    const user = r.json.skills.find((s) => s.name === 'checking-dsh-plugin-updates')
+    assert.ok(user, 'user skill listed')
+    assert.equal(user.source, 'user-dsh')
+    assert.match(user.description, /插件更新/)
+    assert.equal(user.whenToUse, 'Use when asked to check for DSH plugin updates')
+    assert.equal(user.invocation.modelInvocable, true)
+    assert.equal(user.invocation.userInvocable, true)
+    assert.equal(r.json.skills.length, 2)
+  } finally {
+    delete process.env.DSH_MCP_MANAGER_SKILLS_DIR
+  }
+})
+
+test('skill-toggle disables and re-enables a user-level filesystem skill', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-skm-'))
+  const skillsDir = join(home, 'user-skills')
+  const md = '---\nname: my-user-skill\ndescription: A user skill\n---\nbody'
+  const files = new Map()
+  files.set(join(skillsDir, 'my-user-skill', 'SKILL.md'), md)
+  const ctx = makeCtx(home, makeSkills(), files)
+  ctx.fs.listDir = async (p) => (p === skillsDir ? [{ name: 'my-user-skill' }] : [])
+  process.env.DSH_MCP_MANAGER_SKILLS_DIR = skillsDir
+  try {
+    plugin.apply(ctx)
+    let r = await call(ctx._route(), { op: 'skill-toggle', args: { name: 'my-user-skill', enabled: false } })
+    assert.equal(r.json.ok, true)
+    r = await call(ctx._route(), { op: 'skill-list', args: {} })
+    const rows = r.json.skills.filter((s) => s.name === 'my-user-skill')
+    assert.equal(rows.length, 1, 'exactly one row while disabled (scan deduped against override)')
+    assert.equal(rows[0].provider, OVERRIDE)
+    assert.equal(rows[0].invocation.modelInvocable, false)
+    assert.equal(rows[0].invocation.userInvocable, false)
+    const stateFile = join(home, 'profiles', 'web', 'dsh-skill-manager.json')
+    assert.ok(ctx._files.get(stateFile).includes('my-user-skill'))
+
+    r = await call(ctx._route(), { op: 'skill-toggle', args: { name: 'my-user-skill', enabled: true } })
+    assert.equal(r.json.ok, true)
+    r = await call(ctx._route(), { op: 'skill-list', args: {} })
+    const enabled = r.json.skills.find((s) => s.name === 'my-user-skill')
+    assert.equal(enabled.source, 'user-dsh')
+    assert.equal(enabled.invocation.modelInvocable, true)
+  } finally {
+    delete process.env.DSH_MCP_MANAGER_SKILLS_DIR
+  }
+})
+
+test('user-skills scan falls back to dir name and skips invalid dirs', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-skm-'))
+  const skillsDir = join(home, 'user-skills')
+  const files = new Map()
+  files.set(join(skillsDir, 'my-fallback-skill', 'SKILL.md'), '---\ndescription: no name here\n---\nbody')
+  files.set(join(skillsDir, 'Bad_Name', 'SKILL.md'), '---\ndescription: invalid dir name\n---\nbody')
+  const ctx = makeCtx(home, makeSkills(), files)
+  ctx.fs.listDir = async (p) => (p === skillsDir ? [{ name: 'my-fallback-skill' }, { name: 'Bad_Name' }] : [])
+  process.env.DSH_MCP_MANAGER_SKILLS_DIR = skillsDir
+  try {
+    plugin.apply(ctx)
+    const r = await call(ctx._route(), { op: 'skill-list', args: {} })
+    const names = r.json.skills.map((s) => s.name)
+    assert.ok(names.includes('my-fallback-skill'), 'dir-name fallback listed')
+    const fb = r.json.skills.find((s) => s.name === 'my-fallback-skill')
+    assert.equal(fb.description, 'no name here')
+    assert.equal(fb.source, 'user-dsh')
+    assert.ok(!names.includes('Bad_Name'), 'invalid dir name skipped')
+  } finally {
+    delete process.env.DSH_MCP_MANAGER_SKILLS_DIR
+  }
+})
