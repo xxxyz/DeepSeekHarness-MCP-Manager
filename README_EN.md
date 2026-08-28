@@ -129,6 +129,8 @@ Configuration of the plugin itself on its loader row:
 | `version` | The loader row's `config.version`, only used to trigger an HMR re-apply; auto-managed by the bundle channel — no manual edits needed. |
 | `token` | **Optional** access token (write-op auth, defense in depth). When set, state-changing ops (add/edit/remove/enable/restart/import/export/skill-toggle) require the `x-dsh-token: <token>` header; the settings pages provide a token input (stored in browser localStorage). Can also be set via the `DSH_MCP_MANAGER_TOKEN` env var. Off by default. |
 
+> **Why is the token needed?** The plugin's CSRF protection only blocks *cross-site browser* requests — it assumes DSH web listens on localhost (`127.0.0.1`) only. Once you expose port 3080 to a LAN or the public internet (port forwarding, a `dsh-web-lan-access`-style plugin, or a reverse proxy), **anyone who can reach the port gets full write access**: they can add/modify MCP servers, and a `stdio` server's `command` field accepts any executable — i.e. **remote arbitrary code execution**. The token is the last gate for exactly this exposure scenario: without the secret, no write op succeeds even when the port is exposed, so commands cannot be injected. Local single-machine use does not need it.
+
 The loader row must be an **`insert` block** (in DSH's patch dialect a plain `- id:` row only overrides existing entries and can never add a new plugin):
 
 ```yaml

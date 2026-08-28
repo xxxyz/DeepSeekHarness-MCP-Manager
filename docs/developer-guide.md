@@ -61,6 +61,8 @@ inject: ['timer', 'fs', 'settings', 'sandboxPolicy', 'webServer', 'tools', 'skil
 2. 必须带请求头 `x-dsh-plugin: dsh-mcp-manager`
 3. Origin 必须同源（本机脚本不带 Origin 也可以）
 
+**可选 token 鉴权（H1，2.1.3+）**——写操作的最后一道闸，**目的**：CSRF 三重闸门只防"跨站浏览器请求"，它隐含的信任模型是"DSH web 只监听 127.0.0.1"。一旦端口被暴露（端口转发、`dsh-web-lan-access` 类插件、反向代理），任何能访问该端口的人都直接获得完整写权限——`mcpm-add` 的 `stdio.command` 可填任意可执行文件，即**远程任意代码执行**。token 让暴露场景下写操作仍须密钥：`config.token`（loader 行 override，经 Cordis `apply(ctx, config)` 第二参数注入）或环境变量 `DSH_MCP_MANAGER_TOKEN`；启用后 `WRITE_OPS` 集合内所有 op（add/edit/remove/set-enabled/restart/export/import/skill-toggle）校验 `x-dsh-token` 头，读操作（list/version）保持开放以便 UI 渲染。默认关闭，本地单机无需配置。
+
 新增 op 时在 `handleApi` 的 op 分支里加一个 handler 即可（被 `withWriteLock` 包住，按文件写锁串行化）。
 
 ### 4.4 Skills 管理模块

@@ -128,6 +128,8 @@ dsh plugin --profile web remove @xxxyz/dsh-mcp-manager
 | `version` | loader 行 `config.version`，仅用于触发 HMR 重应用；官方通道安装下由 bundle 自动管理，无需手动修改。 |
 | `token` | **可选**访问令牌（写操作鉴权，纵深防御）。设置后写操作（增删改/启停/重启/导入导出/技能停用）须带 `x-dsh-token: <token>` 头；设置页提供令牌输入框（保存在浏览器 localStorage）。也可用环境变量 `DSH_MCP_MANAGER_TOKEN` 配置。默认关闭。 |
 
+> **为什么需要 token？** 插件的 CSRF 防护只拦"跨站浏览器请求"——它假设 DSH web 只监听本机（`127.0.0.1`）。一旦你通过端口转发、`dsh-web-lan-access` 类插件或反向代理把 3080 端口暴露到局域网/公网，**任何能访问该端口的人都直接获得完整写权限**：可以新增/修改 MCP 服务器，而 `stdio` 服务的 `command` 字段可填任意可执行文件——等同于**远程任意代码执行**。token 就是为这种暴露场景加的最后一道闸：没有密钥就无法做任何写操作，即使端口被暴露也不能注入命令。本地单机使用不需要配置。
+
 loader 行必须为 **`insert` 块**形式（DSH patch 方言中普通 `- id:` 行只是对已存在条目的覆盖，无法新增插件）：
 
 ```yaml
