@@ -231,3 +231,65 @@ test('request body cap rejects oversized payloads', async () => {
   assert.equal(r.json.ok, false)
   assert.match(r.json.error, /请求体过大/)
 })
+
+// --- mcpm-tools: MCP service tool preview ---
+function makeToolsCtx(home, schemas) {
+  const ctx = makeCtx(home)
+  ctx.tools = { register() {}, schemas: () => schemas }
+  return ctx
+}
+
+test('mcpm-tools lists tools for a server with name/description/parameter summary', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
+  const schemas = [
+    { name: 'mcp__github__get_repo', description: 'Fetch a repository by name.', parameters: { type: 'object', properties: { repo: { type: 'string', description: 'owner/name' }, limit: { type: 'integer', description: 'max results' } }, required: ['repo'] } },
+    { name: 'mcp__github__list_issues', description: 'List issues for a repo.', parameters: { type: 'object', properties: { repo: { type: 'string', description: 'owner/name' } }, required: ['repo'] } },
+    { name: 'mcp__tavily__search', description: 'Web search.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'the query' } }, required: ['query'] } },
+    { name: 'some_other_tool', description: 'Not MCP-prefixed, ignored.' },
+  ]
+  const ctx = makeToolsCtx(home, schemas)
+  plugin.apply(ctx)
+  const r = await call(ctx._route(), { op: 'mcpm-tools', args: { serverName: 'github' } })
+  assert.equal(r.json.ok, true)
+  assert.equal(r.json.tools.length, 2)
+  const getRepo = r.json.tools.find((t) => t.name === 'get_repo')
+  assert.ok(getRepo, 'prefix stripped in display name')
+  assert.equal(getRepo.description, 'Fetch a repository by name.')
+  // parameter summary: key, required flag, type, description
+  const repoParam = getRepo.parameters.find((p) => p.key === 'repo')
+  assert.ok(repoParam)
+  assert.equal(repoParam.required, true)
+  assert.equal(repoParam.type, 'string')
+  assert.equal(repoParam.description, 'owner/name')
+  const limitParam = getRepo.parameters.find((p) => p.key === 'limit')
+  assert.equal(limitParam.required, false)
+  assert.equal(limitParam.type, 'integer')
+})
+
+test('mcpm-tools returns empty array for unknown server or no tools', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
+  const ctx = makeToolsCtx(home, [{ name: 'mcp__tavily__search', description: 'x', parameters: { type: 'object', properties: {} } }])
+  plugin.apply(ctx)
+  const r = await call(ctx._route(), { op: 'mcpm-tools', args: { serverName: 'nope' } })
+  assert.equal(r.json.ok, true)
+  assert.deepEqual(r.json.tools, [])
+})
+
+test('mcpm-tools returns ok:false when schemas() throws', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
+  const ctx = makeCtx(home)
+  ctx.tools = { register() {}, schemas: () => { throw new Error('registry exploded') } }
+  plugin.apply(ctx)
+  const r = await call(ctx._route(), { op: 'mcpm-tools', args: { serverName: 'github' } })
+  assert.equal(r.json.ok, false)
+  assert.match(r.json.error, /registry exploded/)
+})
+
+test('mcpm-tools rejects empty serverName', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
+  const ctx = makeToolsCtx(home, [])
+  plugin.apply(ctx)
+  const r = await call(ctx._route(), { op: 'mcpm-tools', args: { serverName: '' } })
+  assert.equal(r.json.ok, false)
+  assert.match(r.json.error, /serverName/)
+})

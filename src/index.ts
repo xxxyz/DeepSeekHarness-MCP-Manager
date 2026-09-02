@@ -862,6 +862,52 @@ export default {
       return { ok: true, version: PKG_VERSION }
     }
 
+    // Tool preview for one MCP server: project the model-facing schemas down to
+    // a name + description + parameter-summary list. The registry prefixes every
+    // MCP tool with `mcp__<serverName>__`; we filter on that and strip the prefix
+    // for display. Only the direct `properties` of the parameters object are
+    // summarized — nested object/array children are omitted (one level is enough
+    // for a preview, keeps the dialog readable).
+    async function mcpmTools(args: any): Promise<any> {
+      const serverName = String(args && args.serverName || '').trim()
+      if (!serverName) return { ok: false, error: 'serverName 不能为空' }
+      const prefix = 'mcp__' + serverName + '__'
+      let schemas: any[] = []
+      try {
+        schemas = await tools.schemas()
+      } catch (e) {
+        return { ok: false, error: message(e) }
+      }
+      const toolsList: any[] = []
+      for (const s of schemas) {
+        const fullName = String(s && s.name || '')
+        if (!fullName.startsWith(prefix)) continue
+        const params: any[] = []
+        const props = s.parameters && typeof s.parameters === 'object' ? s.parameters.properties : null
+        const requiredSet = new Set<string>()
+        if (s.parameters && Array.isArray(s.parameters.required)) {
+          for (const k of s.parameters.required) if (typeof k === 'string') requiredSet.add(k)
+        }
+        if (props && typeof props === 'object') {
+          for (const [key, spec] of Object.entries(props as Record<string, any>)) {
+            const ps = (spec && typeof spec === 'object') ? spec : {}
+            params.push({
+              key,
+              required: requiredSet.has(key),
+              type: typeof ps.type === 'string' ? ps.type : 'any',
+              ...(typeof ps.description === 'string' ? { description: ps.description } : {}),
+            })
+          }
+        }
+        toolsList.push({
+          name: fullName.slice(prefix.length),
+          description: typeof s.description === 'string' ? s.description : '',
+          parameters: params,
+        })
+      }
+      return { ok: true, tools: toolsList }
+    }
+
     async function mcpmList(): Promise<any> {
       const p = await ensurePaths()
       const rows: any[] = []
@@ -1151,6 +1197,7 @@ export default {
     const handlers: Record<string, (args: any) => Promise<any>> = {
       'plugin-version': pluginVersion,
       'mcpm-list': mcpmList,
+      'mcpm-tools': mcpmTools,
       'mcpm-add': mcpmAdd,
       'mcpm-edit': mcpmEdit,
       'mcpm-set-enabled': mcpmSetEnabled,
