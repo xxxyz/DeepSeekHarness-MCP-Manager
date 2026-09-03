@@ -6,3 +6,6 @@ Thumbs.db
 
 .superpowers/
 *.tgz
+
+# Local-only release tooling (scripts/release-notes.mjs + releases.json)
+scripts/
