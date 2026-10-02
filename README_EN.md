@@ -117,8 +117,14 @@ Open **Settings → MCP 管理**:
 
 Open **Settings → Skills 管理**:
 
-- **Browse / Search**: lists every DSH skill grouped by source (project / runtime / custom / user / built-in / plugin-bundled), collapsed per provider; the search box filters live. User-level skills under `~/.dsh/skills/` (2.2.0+) are listed too — even though the official scoped layer never exposes them to scope-less queries.
+- **Browse / Search**: lists every DSH skill grouped by source (project / runtime / custom / user / built-in / plugin-bundled), collapsed per provider; the search box filters live. User-level skills under `~/.dsh/skills/` (2.2.0+) are listed too — even though the official scoped layer never exposes them to scope-less queries. Project-level skills (`<workspace>/.dsh/skills`, `<workspace>/.agents/skills`) are reached through cwd-scoped snapshots plus a direct directory scan (2.2.8+).
 - **Enable / Disable**: toggle any skill in one click — implemented with a rank-0 override provider (`dsh-mcp-manager-override`), so every source level (including project-level and user-level filesystem skills) can be disabled.
+- **＋ New custom skill**: name (kebab-case), description (required — the model uses it to decide when to load the skill), an optional "when to use" and a Markdown body. Pick the level and it is written in one click:
+  - user → `~/.dsh/skills/<name>/SKILL.md` (available in every workspace)
+  - project → `<workspace>/.dsh/skills/<name>/SKILL.md` (the workspace list comes from the roots the skill scan resolved)
+  - an existing name is refused (no silent overwrite); the body is capped at 64 KB; `name` must match `[a-z0-9]+(-[a-z0-9]+)*`, so path traversal is impossible.
+- **⇩ Copy skills from other programs**: scans the skill directories other coding tools installed on this machine and lists what it finds, then copies the selected entries into either level:
+  `~/.claude/skills`, `~/.claude/plugins`, `~/.agents/skills`, `~/.codex/skills`, `~/.codex/plugins`, `~/.cursor/skills`, `~/.gemini/skills`, `~/.config/opencode/skills`, `~/.codeium/windsurf/skills`, `~/.github/copilot/skills`, `~/.dsh/skills-management/market/skills` (the local DSH skill-market clone). Directory bundles are copied whole (companion files such as `references/` included, depth and file count bounded); flat `<name>.md` skills are copied as files. Conflict policies: **skip / rename copy (-2) / overwrite**.
 - **Persistence**: disabled state is written to `<profileDir>/dsh-skill-manager.json`, survives restarts, and applies live via HMR.
 
 ## ⚙️ Configuration
