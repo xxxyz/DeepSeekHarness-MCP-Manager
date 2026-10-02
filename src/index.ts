@@ -14,6 +14,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { createRequire } from 'node:module'
+import { readFile, readdir, appendFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import yaml from 'js-yaml'
 
 // ---------------------------------------------------------------------------
 // Minimal structural types for the service surfaces this plugin touches.
@@ -98,7 +101,9 @@ interface SkillService {
     list(options?: unknown): Promise<SkillSummary[] | { candidates: SkillSummary[]; complete: boolean }>
     get(candidate: SkillSummary, options?: unknown): Promise<SkillDefinition | undefined>
   }): unknown
-  snapshot(options?: unknown): Promise<{ skills: SkillSummary[]; complete: boolean }>
+  // `cwd` selects the project roots (<cwd>/.dsh/skills, <cwd>/.agents/skills); a
+  // scope-less call without it only reaches the user/global roots.
+  snapshot(options?: { cwd?: string; scope?: unknown; signal?: unknown }): Promise<{ skills: SkillSummary[]; complete: boolean }>
   get(name: string, options?: unknown): Promise<SkillDefinition | undefined>
 }
 
@@ -285,11 +290,21 @@ export default {
     function parseSkillFile(raw: string): { fm: { name: string; description: string; whenToUse?: string; userInvocable?: boolean; disableModelInvocation?: boolean }; content: string } | null {
       const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)
       if (!m) return null
+      // Real YAML parsing: the previous line-based reader stopped at the first
+      // `key: value` per line, so a block scalar (`description: |` followed by
+      // indented lines — the shape a long SKILL.md description usually takes)
+      // came out as the literal string "|" and the page showed that instead of
+      // the text. js-yaml is already a dependency of this package.
+      let data: unknown
+      try {
+        data = yaml.load(m[1])
+      } catch (e) {
+        return null
+      }
+      if (data === null || typeof data !== 'object' || Array.isArray(data)) return null
       const fields = new Map<string, string>()
-      for (const line of m[1].split(/\r?\n/)) {
-        const kv = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(line.trim())
-        if (!kv) continue
-        fields.set(kv[1], kv[2].trim().replace(/^['"]|['"]$/g, ''))
+      for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+        fields.set(key, value === null || value === undefined ? '' : String(value))
       }
       if (fields.has('userInvocable') || fields.has('modelInvocable')) return null
       const name = fields.get('name')
@@ -314,6 +329,149 @@ export default {
       return { fm, content }
     }
 
+    // ---------- skill discovery: filesystem reads and extra roots ----------
+    // The management page reads through ctx.skills.snapshot({}), which carries no
+    // cwd and therefore never reaches the project roots, and user/extra roots are
+    // scanned by hand. Two runtime realities make the obvious implementations
+    // wrong, so both are handled explicitly:
+    //   1. ctx.fs is confined to the session workspace, so a read of ~/.dsh or of
+    //      a workspace outside the active session root fails — Node's own fs is
+    //      tried first and ctx.fs stays as the fallback (which also keeps the
+    //      test harness, a virtual in-memory fs, working).
+    //   2. the profile host runs the plugin with an empty DSH_HOME — the variable
+    //      must not be trusted for path derivation; $DSH_PROFILE_DIR → DSH home is
+    //      used instead, and roots that fail to resolve simply contribute nothing.
+    const TRACE_ENABLED = !!String(process.env.DSH_MCP_MANAGER_SKILLS_TRACE || '').trim()
+    function trace(line: string): void {
+      if (!TRACE_ENABLED) return
+      try {
+        const base = String(process.env.DSH_HOME || '').trim() || String(process.env.DSH_PROFILE_DIR || '').trim() || '.'
+        void appendFile(join(base, 'skills-scan.log'), `${new Date().toISOString()} ${line}\n`).catch(() => {})
+      } catch (e) { /* tracing must never break the page */ }
+    }
+    async function nativeReadText(abs: string): Promise<string> {
+      return await readFile(abs, 'utf8')
+    }
+    async function readTextAny(abs: string): Promise<string> {
+      try {
+        return await nativeReadText(abs)
+      } catch (e) {
+        return await fs.readText(await fs.resolve(abs))
+      }
+    }
+    // DSH home derived from the profile directory (…/.dsh/profiles/<name> → …/.dsh).
+    // Both host shapes are handled: a host that leaves $DSH_HOME empty (or unset)
+    // and a host that sets $DSH_HOME to the profile directory itself — the case
+    // that made every derived path wrong. A $DSH_HOME that does not end in
+    // profiles/<name> is trusted as-is.
+    function realDshHome(): string {
+      const trim = (v: unknown): string => String(v ?? '').trim().replace(/[\\/]+$/, '')
+      const envHome = trim(process.env.DSH_HOME)
+      const profileDir = trim(process.env.DSH_PROFILE_DIR)
+      const profileName = trim(process.env.DSH_PROFILE)
+      const up = (p: string): string => p.slice(0, Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/')))
+      const endsWithProfiles = (p: string): boolean => /[\\/]profiles([\\/]|$)/i.test(p)
+      if (profileDir && (!envHome || profileDir.toLowerCase() === envHome.toLowerCase() || endsWithProfiles(envHome))) {
+        return up(up(profileDir))
+      }
+      if (envHome) return envHome
+      if (profileDir) return up(up(profileDir))
+      if (profileName) return '' // nothing else to derive from
+      return ''
+    }
+    let workspaceRootsCache: string[] | null = null
+    async function workspaceRoots(): Promise<string[]> {
+      if (workspaceRootsCache) return workspaceRootsCache
+      const roots: string[] = []
+      const push = (value: unknown): void => {
+        if (typeof value !== 'string' || !value.trim()) return
+        const trimmed = value.trim().replace(/[\\/]+$/, '')
+        if (trimmed && !roots.includes(trimmed)) roots.push(trimmed)
+      }
+      for (const key of ['DSH_CWD', 'DSH_WORKSPACE', 'DSH_WORKSPACE_DIR', 'DSH_PROJECT_DIR']) push(process.env[key])
+      // process.cwd() is only a workspace when the host says so ($DSH_CWD, above);
+      // the plugin's own cwd can be the profile directory, and treating that as a
+      // workspace makes the scan walk node_modules.
+      const envCwd = String(process.env.DSH_CWD || '').trim().replace(/[\\/]+$/, '')
+      if (envCwd) push(envCwd)
+      const home = realDshHome()
+      if (home) push(home)                       // <home>/storages/workspace.json
+      if (home) push(home + '/skills')           // the home skills root is itself a skills directory
+      try {
+        const p = await ensurePaths()
+        push(p.home)
+        const sep = p.home.indexOf('\\') >= 0 ? '\\' : '/'
+        const candidates = [...new Set([home, p.home].filter((v): v is string => !!v))]
+        for (const base of candidates) {
+          const file = base + sep + 'storages' + sep + 'workspace.json'
+          try {
+            const parsed = JSON.parse(await readTextAny(file)) as { global?: { defaultWorkspaceId?: string }; tables?: { workspaces?: Record<string, { path?: string }> } }
+            const table = parsed?.tables?.workspaces ?? {}
+            const preferred = parsed?.global?.defaultWorkspaceId
+            const ids = Object.keys(table).sort((a, b) => (a === preferred ? -1 : b === preferred ? 1 : 0))
+            for (const id of ids) push(table[id]?.path)
+            break
+          } catch (e) { /* try the next base */ }
+        }
+      } catch (e) { /* workspace.json unreadable — env/cwd roots still apply */ }
+      workspaceRootsCache = roots
+      trace(`workspaceRoots: home=${home || '(none)'} roots=${JSON.stringify(roots)}`)
+      return roots
+    }
+    // Skill directories inside one root, in the official provider's order.
+    function skillDirsIn(root: string): string[] {
+      const sep = root.indexOf('\\') >= 0 ? '\\' : '/'
+      const rels = ['.dsh/skills', '.agents/skills']
+      return rels.map((rel) => root + sep + rel.split('/').join(sep))
+    }
+    // Entries come from Node's readdir (Dirent, isDirectory() is a method) or
+    // from the fs-service fallback (plain objects); only `name` is read.
+    async function listDirAny(dir: string): Promise<Array<{ name: string; isDirectory?: unknown }>> {
+      try {
+        return await readdir(dir, { withFileTypes: true })
+      } catch (e) {
+        return await fs.listDir(await fs.resolve(dir))
+      }
+    }
+    async function scanRootSkills(root: string, seen: Set<string>): Promise<SkillSummary[]> {
+      const rows: SkillSummary[] = []
+      const sep = root.indexOf('\\') >= 0 ? '\\' : '/'
+      for (const dir of skillDirsIn(root)) {
+        let entries: Array<{ name: string; isDirectory?: unknown }> = []
+        try {
+          entries = await listDirAny(dir)
+        } catch (e) {
+          trace(`rootScan: ${dir} unreadable: ${String((e as Error)?.message ?? e)}`)
+          continue
+        }
+        for (const ent of entries) {
+          const nm = String(ent.name || '')
+          if (!nm || nm === '.system' || nm === 'node_modules' || seen.has(nm)) continue
+          const skillDir = dir + sep + nm
+          let raw = ''
+          try {
+            raw = await readTextAny(skillDir + sep + 'SKILL.md')
+          } catch (e) {
+            continue
+          }
+          const parsed = parseSkillFile(raw)
+          if (!parsed || !SKILL_NAME_RE.test(parsed.fm.name) || seen.has(parsed.fm.name)) continue
+          seen.add(parsed.fm.name)
+          rows.push({
+            name: parsed.fm.name,
+            description: parsed.fm.description,
+            ...(parsed.fm.whenToUse !== undefined ? { whenToUse: parsed.fm.whenToUse } : {}),
+            invocation: { modelInvocable: parsed.fm.disableModelInvocation !== true, userInvocable: parsed.fm.userInvocable !== false },
+            source: 'project-agents',
+            provider: 'filesystem',
+            resourceBase: { kind: 'directory', path: skillDir },
+            path: skillDir + sep + 'SKILL.md',
+          })
+        }
+      }
+      return rows
+    }
+
     async function scanUserSkills(): Promise<SkillDefinition[]> {
       let dir: string
       let sep: string
@@ -323,7 +481,10 @@ export default {
         dir = userSkillsDir(p.home, sep)
       } catch (e) { return [] }
       let entries: Array<{ name: string }> = []
-      try { entries = await fs.listDir(await fs.resolve(dir)) } catch (e) { return [] }
+      try { entries = await listDirAny(dir) } catch (e) {
+        trace(`scanUserSkills: ${dir} unreadable: ${String((e as Error)?.message ?? e)}`)
+        return []
+      }
       const rows: SkillDefinition[] = []
       const seen = new Set<string>()
       for (const ent of entries) {
@@ -336,11 +497,11 @@ export default {
         let path = dir + sep + nm + sep + 'SKILL.md'
         let directory = dir + sep + nm
         let raw = ''
-        try { raw = await fs.readText(await fs.resolve(path)) } catch (e) {
+        try { raw = await readTextAny(path) } catch (e) {
           if (!nm.endsWith('.md')) continue
           path = dir + sep + nm
           directory = dir
-          try { raw = await fs.readText(await fs.resolve(path)) } catch (e2) { continue }
+          try { raw = await readTextAny(path) } catch (e2) { continue }
         }
         const parsed = parseSkillFile(raw)
         if (!parsed) {
@@ -372,11 +533,42 @@ export default {
 
     async function skillList() {
       await ensureRestored()
-      const snap = await ctx.skills.snapshot({})
-      const seen = new Set(snap.skills.map((s) => s.name))
-      const extra = (await scanUserSkills()).filter((s) => !seen.has(s.name))
-      const skills = snap.skills.concat(extra).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-      return { ok: true, skills, complete: snap.complete !== false }
+      // Project roots are cwd-scoped: without a cwd the snapshot only carries the
+      // user/global roots, so skills installed into a workspace never reached the
+      // page. Ask once per known workspace root and merge, then add the hand-scans.
+      const observations: Array<{ skills: SkillSummary[]; complete: boolean }> = []
+      try {
+        observations.push(await ctx.skills.snapshot({}))
+      } catch (e) {
+        console.warn('[dsh-mcp-manager] global skill snapshot failed:', String((e as Error)?.message ?? e))
+      }
+      for (const cwd of await workspaceRoots()) {
+        try {
+          observations.push(await ctx.skills.snapshot({ cwd }))
+        } catch (e) { /* that root simply contributes nothing */ }
+      }
+      const seen = new Set<string>()
+      const skills: SkillSummary[] = []
+      for (const snap of observations) {
+        for (const s of snap?.skills ?? []) {
+          if (!s || seen.has(s.name)) continue
+          seen.add(s.name)
+          skills.push(s)
+        }
+      }
+      for (const row of await scanUserSkills()) {
+        if (row && !seen.has(row.name)) {
+          seen.add(row.name)
+          skills.push(row)
+        }
+      }
+      for (const root of await workspaceRoots()) {
+        for (const row of await scanRootSkills(root, seen)) skills.push(row)
+      }
+      skills.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      const complete = observations.length > 0 && observations.every((s) => !s || s.complete !== false)
+      trace(`skill-list: ${skills.length} skills, observations=${observations.length}`)
+      return { ok: true, skills, complete }
     }
     // User-level skills (~/.dsh/skills) are VIEW-ONLY in this page. They are
     // discovered by dsh-skill-filesystem in the agent-preset SCOPED layer; a
@@ -435,13 +627,20 @@ export default {
     async function ensurePaths() {
       if (cached) return cached
       let home: string | null = null
-      try {
-        const doc = await settings.prepareDocument()
-        if (typeof doc === 'string' && doc) {
-          const i = Math.max(doc.lastIndexOf('\\'), doc.lastIndexOf('/'))
-          home = i > 0 ? doc.slice(0, i) : doc
-        }
-      } catch (e) { /* ignore */ }
+      // Environment first: on a desktop profile the config-editor document path can
+      // degenerate to the profile directory, which then made every derived path
+      // wrong (the user skills folder was never scanned and a stray
+      // profiles/<name>/profiles/<name>/ tree could be created).
+      home = realDshHome() || null
+      if (!home) {
+        try {
+          const doc = await settings.prepareDocument()
+          if (typeof doc === 'string' && doc) {
+            const i = Math.max(doc.lastIndexOf('\\'), doc.lastIndexOf('/'))
+            home = i > 0 ? doc.slice(0, i) : doc
+          }
+        } catch (e) { /* ignore */ }
+      }
       if (!home) throw new Error('无法确定 DSH 主目录（settings.prepareDocument 未返回路径）')
       const sep = home.indexOf('\\') >= 0 ? '\\' : '/'
       let profileDir: string | null = null

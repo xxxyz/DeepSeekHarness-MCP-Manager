@@ -8,6 +8,18 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import plugin from '../lib/index.js'
 
+// Hermetic environment: the host's own DSH_* variables point at the real DSH home
+// and the real workspace, and the plugin derives its paths from them. Without this
+// a test process started from inside a running Harness would write into the real
+// profile patch instead of its temp fixtures.
+const HOST_ENV = ['DSH_HOME', 'DSH_PROFILE_DIR', 'DSH_PROFILE', 'DSH_CWD', 'DSH_WORKSPACE', 'DSH_WORKSPACE_DIR', 'DSH_PROJECT_DIR']
+test.beforeEach(() => {
+  for (const key of HOST_ENV) delete process.env[key]
+})
+test.after(() => {
+  for (const key of HOST_ENV) delete process.env[key]
+})
+
 // Fake Cordis ctx exposing exactly the surfaces the plugin touches. Same shape
 // as skills.test.mjs, extended with `config` for the token gate and
 // `tools.schemas` for the live tool-count in mcpm-list.
