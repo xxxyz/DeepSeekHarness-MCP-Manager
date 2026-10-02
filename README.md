@@ -116,8 +116,14 @@ dsh plugin --profile web remove @xxxyz/dsh-mcp-manager
 
 打开 **设置 → Skills 管理**：
 
-- **浏览 / 搜索**：列出 DSH 全部技能，按来源分组（项目级 / 运行时 / 自定义 / 用户级 / 内置 / 插件自带），组内按 provider 折叠；搜索框实时过滤。`~/.dsh/skills/` 下的用户级技能（2.2.0+）同样可见——即使官方 scoped 层不向无 scope 查询暴露它们。
+- **浏览 / 搜索**：列出 DSH 全部技能，按来源分组（项目级 / 运行时 / 自定义 / 用户级 / 内置 / 插件自带），组内按 provider 折叠；搜索框实时过滤。`~/.dsh/skills/` 下的用户级技能（2.2.0+）同样可见——即使官方 scoped 层不向无 scope 查询暴露它们。项目级技能（`<工作区>/.dsh/skills`、`<工作区>/.agents/skills`）通过带 `cwd` 的快照 + 目录直扫进入列表（2.2.8+）。
 - **启用 / 停用**：一键切换任意技能的启用状态——通过 rank-0 override provider（`dsh-mcp-manager-override`）实现，任何来源层级（含项目级与用户级文件系统技能）都能禁用。
+- **＋ 新建自定义技能**：填写技能名（kebab-case）、描述（必填，模型据此决定何时加载）、可选的“何时使用”和 Markdown 正文，选择落点后一键写入：
+  - 用户级 → `~/.dsh/skills/<name>/SKILL.md`（所有工作区可用）
+  - 项目级 → `<工作区>/.dsh/skills/<name>/SKILL.md`（工作区下拉来自技能扫描解析到的真实工作区）
+  - 同名已存在会被拒绝（不静默覆盖）；正文上限 64KB；`name` 必须匹配 `[a-z0-9]+(-[a-z0-9]+)*`，因此不存在路径穿越。
+- **⇩ 从其他程序复制技能**：扫描本机其它编码工具的技能目录并列出条目，勾选后一键复制到上面任一落点：
+  `~/.claude/skills`、`~/.claude/plugins`、`~/.agents/skills`、`~/.codex/skills`、`~/.codex/plugins`、`~/.cursor/skills`、`~/.gemini/skills`、`~/.config/opencode/skills`、`~/.codeium/windsurf/skills`、`~/.github/copilot/skills`、`~/.dsh/skills-management/market/skills`（DSH 技能市场本地副本）。目录型技能整目录复制（含 `references/` 等附属文件，深度/文件数有上限），`<name>.md` 平铺技能按文件复制；冲突策略可选 **跳过 / 重命名副本（-2）/ 覆盖**。
 - **持久化**：停用状态写入 `<profileDir>/dsh-skill-manager.json`，重启后保留；改动经 HMR 即时生效。
 
 ## ⚙️ 配置

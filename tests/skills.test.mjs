@@ -8,6 +8,18 @@ import plugin from '../lib/index.js'
 
 const OVERRIDE = 'dsh-mcp-manager-override'
 
+// Hermetic environment: the host's own DSH_* variables name the real DSH home and
+// the real workspace, and the discovery added in 2.2.8+ reads them. A test process
+// started from inside a running Harness would otherwise scan the developer's real
+// skills while asserting on its temp fixtures.
+const HOST_ENV = ['DSH_HOME', 'DSH_PROFILE_DIR', 'DSH_PROFILE', 'DSH_CWD', 'DSH_WORKSPACE', 'DSH_WORKSPACE_DIR', 'DSH_PROJECT_DIR']
+test.beforeEach(() => {
+  for (const key of HOST_ENV) delete process.env[key]
+})
+test.after(() => {
+  for (const key of HOST_ENV) delete process.env[key]
+})
+
 // Fake `ctx.skills` service: a name→definition map plus a live provider whose
 // candidates always win (models the real registry's rank-0 override behavior).
 function makeSkills() {
