@@ -1,6 +1,6 @@
 # Bundle patch layer for the official CLI install:
 #
-#   dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
+#   dsh plugin --profile <profile> add @xxxyz/dsh-mcp-manager@latest
 #
 # `dsh plugin add` reconciles `dsh.profile.bundles` against installed packages
 # and, seeing the `dsh.bundle.patch` declaration in package.json, appends

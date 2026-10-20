@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="MCP and Skills manager">
+  <defs>
+    <linearGradient id="g" x1="10" y1="8" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4d8dff"/>
+      <stop offset="1" stop-color="#2350c7"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#g)"/>
+  <g fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="17" y="16" width="30" height="11" rx="3.5"/>
+    <rect x="17" y="30" width="30" height="11" rx="3.5"/>
+    <path d="M23 21.5h.01M23 35.5h.01"/>
+    <path d="M32 41v7"/>
+    <path d="M24.5 48h15"/>
+  </g>
+  <circle cx="46.5" cy="46.5" r="7.5" fill="#fff"/>
+  <path d="M46.5 42.5v8M42.5 46.5h8" stroke="#2350c7" stroke-width="2.2" stroke-linecap="round"/>
+</svg>

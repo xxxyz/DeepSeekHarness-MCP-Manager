@@ -1,6 +1,10 @@
 node_modules/
 npm-debug.log*
+*.log
 *.tsbuildinfo
+coverage/
+.env
+.env.*
 .DS_Store
 Thumbs.db
 

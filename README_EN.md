@@ -2,19 +2,19 @@
 
 <!-- Hero -->
 <div align="center">
-  <b style="font-size: 1.15em;">Manage every MCP server and skill in DeepSeek Harness from one settings page — install, configure, monitor.</b><br /><br />
-  <code>server list</code> <code>add / edit / delete</code> <code>enable / disable</code> <code>restart</code> <code>tool-count health</code> <code>JSON export / import</code><br />
-  <code>Skills browse / search / disable</code> <code>4 model tools</code> <code>HTTP API</code> <code>dsh plugin one-command</code><br /><br />
-  <b>Settings → MCP 管理</b> manages <code>@deepseek-ai/dsh-mcp-client</code> rows in your project-level and
-  global <code>cordis.patch.yml</code>; <b>Settings → Skills 管理</b> browses and disables skills from every
-  source — no hand-editing, every change applies live via HMR, survives restarts and upgrades.
+  <b style="font-size: 1.15em;">MCP server and skill management for DeepSeek Harness — installed, connected, managed on one page.</b><br /><br />
+  <code>Server list</code> <code>Add / edit / remove</code> <code>Enable / disable</code> <code>Restart</code> <code>Tool health</code> <code>JSON export / import</code><br />
+  <code>Browse / search / disable skills</code> <code>4 model tools</code> <code>HTTP API</code> <code>one-command install</code><br /><br />
+  <b>Settings → MCP servers</b> manages <code>@deepseek-ai/dsh-mcp-client</code> rows in the <strong>current profile's</strong> <code>cordis.patch.yml</code>; rows from the global home layer are shown read-only.<br />
+  <b>Settings → Skills</b> browses and disables global, project-root, user-root, and plugin-provided skills. Every change applies through the Loader.
 </div>
 
 <div align="center">
 
 [![npm version](https://img.shields.io/npm/v/@xxxyz/dsh-mcp-manager?logo=npm&color=cb3837)](https://www.npmjs.com/package/@xxxyz/dsh-mcp-manager)
 [![License](https://img.shields.io/github/license/xxxyz/DeepSeekHarness-MCP-Manager?color=blue)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-339933?logo=node.js)](package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js)](package.json)
+[![DSH](https://img.shields.io/badge/dsh-%3E%3D0.2.1--rc.2%20%3C0.3-4d6bfe)](package.json)
 [![GitHub](https://img.shields.io/badge/GitHub-xxxyz%2FDeepSeekHarness--MCP--Manager-181717?logo=github)](https://github.com/xxxyz/DeepSeekHarness-MCP-Manager)
 [![dsh.market](https://img.shields.io/badge/dsh.market-%E2%9C%93-3fb950)](https://dsh.market)
 [![awesome-dsh-plugin](https://img.shields.io/badge/awesome--dsh--plugin-listed-3fb950)](https://awesome-dsh-plugin.com)
@@ -23,75 +23,71 @@
 </div>
 
 <div align="center">
-  🛒 Listed on <a href="https://dsh.market"><b>dsh.market</b></a> · <a href="https://awesome-dsh-plugin.com"><b>awesome-dsh-plugin.com</b></a> · <a href="https://whyihaveyou.github.io/dsh-suite/"><b>dsh-suite</b></a>
-</div>
-
-<div align="center">
   🌏 <a href="./README.md">中文</a> · <a href="./README_EN.md"><b>English</b></a>
 </div>
 
-<br />
-
-<p align="center"><img src="show.png" alt="dsh-mcp-manager Settings → MCP 管理 page" /></p>
-
 ## ✨ Features
 
-- **📋 Server list** — every configured MCP server (`@deepseek-ai/dsh-mcp-client` instance): `serverName`, transport (`stdio` / `streamable-http`), URL / command, enabled state, live loader phase, registered tool count
-- **➕ Add / ➖ Delete** — form-based (env / headers / args supported) with format and duplicate-name validation; one-click delete
-- **🔌 Enable / Disable** — flip at any time, tools hot-connect / hot-disconnect
-- **🔄 Restart** — disable + re-enable, reconnect and re-sync tools automatically
-- **💾 Persistence** — written to the **project-level** (`profiles/<profile>/cordis.patch.yml`) or **global** (`~/.dsh/cordis.patch.yml`) patch file; survives restarts; the file path is shown at the bottom of the page
-- **🩺 Health check** — live tool counts and loader phase per server, problems visible at a glance
-- **📦 Backup / Restore** — JSON export / import; merges new entries, skips existing ones
-- **🤖 Model tools** — four `mcp_manager_*` tools registered on the host, so the model can query and manage MCP servers directly
-- **🧠 Skill management** — the **Settings → Skills 管理** page lists every DSH skill grouped by source (project / runtime / custom / user / built-in / plugin-bundled) with search and per-provider collapse; enable / disable any skill in one click (rank-0 override provider, so every source level including project-level is disable-able), persisted to `dsh-skill-manager.json`, applied live via HMR
-- **🌐 HTTP API** — `POST /dsh-mcp-manager/api` (JSON `{op, args}` → `{ok, ...}`) for the client and scripts. Cross-site (CSRF) protected: POST-only, requires the `x-dsh-plugin: dsh-mcp-manager` request header, and checks the Origin is same-origin (local scripts without an Origin are fine)
-- **📦 One-command install** — `dsh plugin --profile web add` installs and mounts automatically (Windows / macOS / Linux)
+- **📋 Server list**: every configured MCP server (`@deepseek-ai/dsh-mcp-client`) with `serverName`, transport (`stdio` / `streamable-http`), URL or command, enablement, live Loader phase, and registered tool count.
+- **➕ Add / remove**: a form with env / headers / args / cwd / timeout / reconnection, format and duplicate validation, and one-click removal.
+- **🔌 Enable / disable**: manages current-profile rows, preferring the official `pluginManager.setPluginEnabled()`; falls back to the current profile patch when the row is unaddressable.
+- **🔄 Restart**: disable and re-enable, reconnect, and re-sync tools while watching the Loader phase.
+- **💾 Persistence**: writes to the **current profile** (`profiles/<profile>/cordis.patch.yml`) and survives restart. Rows from `~/.dsh/cordis.patch.yml` (global home) are listed read-only: visible, but not edited, toggled, or exported. The path area shows only the current profile unless the home layer actually has MCP rows (or overrides a profile row).
+- **🩺 Health**: live tool counts and Loader phases; failure and zero-tool states are called out.
+- **⚙️ 0.2.x fields**: `cwd`, `toolCallTimeoutMs`, `failOnStartupError`, `maxInstructionBytes`, `reconnect.{enabled,initialDelayMs,maxDelayMs,maxAttempts}`.
+- **📦 Backup / restore**: JSON export and import; imports add missing rows and skip existing ones.
+- **🤖 Model tools**: four `mcp_manager_*` tools registered on the Host.
+- **🧠 Skills**: **Settings → Skills** aggregates the global registry and every live session scope, grouped by source (project root, runtime, custom root, user root, bundled root, plugin-provided). Project-root, user-root, and plugin skills can genuinely be disabled through rank-0 override providers in the global layer and each agent scope. State lives in `dsh-skill-manager.json` and applies immediately.
+- **🌐 HTTP API**: `POST /dsh-mcp-manager/api` with `{op, args}` → `{ok, ...}`. POST-only, requires `x-dsh-plugin: dsh-mcp-manager`, and validates the same-origin `Origin` (local scripts without an Origin still work).
+- **🎨 Host-consistent UI**: page width, type sizes, cards, status chips, switches, search fields, and dialogs use `--dsw-alias-*` theme tokens; Chinese and English go through the Client locale service; dialogs support Escape, backdrop close, and focus restore.
+- **📦 One-command install**: `dsh plugin --profile <profile> add` installs and mounts the bundle.
 
 ## 🚀 Install
 
-**Prerequisite**: DSH installed and running (`dsh web` works), Node.js ≥ 18, pnpm ≥ 9.
+**Requirements**: DSH `>= 0.2.1-rc.2 < 0.3`, Node.js ≥ 20, pnpm ≥ 9.
 
-### Method 1 · dsh command (recommended)
-
-One command installs the package and **auto-mounts** it (the `dsh.bundle.patch` mechanism — no manual config file edits needed):
+### Option 1 — dsh CLI (recommended)
 
 ```sh
-dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
+dsh plugin --profile desktop add @xxxyz/dsh-mcp-manager@latest
 ```
 
-After installing, **hard-refresh the browser** (Cmd/Ctrl+Shift+R) and open **Settings → MCP 管理** (DSH hot-reloads client changes; a full restart is only needed for host-half changes).
+`desktop` is the DeepSeek Desktop profile; use `web` for the CLI Web profile, or your own profile name.
 
-### Method 2 · Let DSH install it
+After installation, hard-refresh the browser (Cmd/Ctrl+Shift+R). Client changes hot-reload; only a Host-half update needs a DSH restart.
 
-Paste this prompt into any DSH conversation:
+### Option 2 — let DSH install it
 
 ```text
 Install the dsh-mcp-manager plugin (DSH MCP server manager):
-1. Run dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
-2. When done, remind me to hard-refresh the browser (Cmd/Ctrl+Shift+R)
-If you hit an error, check https://github.com/xxxyz/DeepSeekHarness-MCP-Manager README's FAQ table.
+1. Run: dsh plugin --profile desktop add @xxxyz/dsh-mcp-manager@latest
+2. When it finishes, remind me to hard-refresh the browser (Cmd/Ctrl+Shift+R).
+If it fails, check the FAQ in https://github.com/xxxyz/DeepSeekHarness-MCP-Manager first.
 ```
 
 **Update**
 
 ```sh
-dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest
+dsh plugin --profile desktop add @xxxyz/dsh-mcp-manager@latest
 ```
 
-Or bump the version in `~/.dsh/profiles/web/package.json` and run `pnpm install`. Hard-refresh the browser afterwards (Cmd/Ctrl+Shift+R) — client changes are hot-reloaded; only host-half changes need a restart.
+You can also raise the version in `~/.dsh/profiles/<profile>/package.json` and run `pnpm install`, then hard-refresh.
+
+> **Version requirement**: this package declares `engines.dsh = ">=0.2.1-rc.2 <0.3.0"`. Older DSH releases (0.1.x) refuse to mount it; 0.3+ needs an upgrade against the new contract.
 
 <details>
 <summary><b>FAQ</b></summary>
 
-| Symptom | Cause & fix |
+| Symptom | Cause and fix |
 |---|---|
-| No "MCP 管理" in Settings after install | Hard-refresh (Cmd/Ctrl+Shift+R); if still missing, restart DSH once. |
-| **Two MCP tabs / duplicated tools** | Double mount: both a legacy loader row and the new bundle entry exist. Delete the old loader row from `cordis.patch.yml`, or the `dsh.profile.bundles` entry, then restart DSH. |
-| Upgrading from a legacy script install | The new bundle has a built-in double-mount guard — `dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest` won't crash. To actually switch to the new code: remove the old `- id: mcp-manager` row from `~/.dsh/profiles/web/cordis.patch.yml`, delete `local-packages/dsh-mcp-manager` and `profiles/node_modules/dsh-mcp-manager`, then restart DSH. |
-| `dsh: command not found` | Install DSH first, or use `npx -y --package @deepseek-ai/dsh dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest`. |
-| `npm view` reports 404 | Local mirror (npmmirror) sync lag: add `--registry=https://registry.npmjs.org` or wait a moment. |
-| Config changes don't take effect | All changes apply via HMR within 1–2 s; the page auto-polls. |
+| No “MCP servers” / “Skills” section | Hard-refresh (Cmd/Ctrl+Shift+R); if it is still missing, restart DSH. |
+| DSH version is incompatible | This build targets DSH 0.2.x. Upgrade DSH or use the previous plugin major. |
+| Two MCP tabs or duplicated tools | Double mount: an old loader row and the bundle entry both exist. Remove the old row from `cordis.patch.yml` or the profile bundle list, then restart. |
+| Enable/restart says `unaddressable` or `management-required` | The row comes from a bundle or aggregate layer that DSH does not address through the profile patch; the page shows it read-only. |
+| A row is tagged “Global home (read-only)” | The row comes from `~/.dsh/cordis.patch.yml`, which outranks the profile. The manager only displays it; add a copy in the current profile to edit it. |
+| `pluginManager` reports “did not activate” | The MCP server itself failed to connect (URL, command, credentials, network). Check the `loader: failed` hint and the server. |
+| Upgrading from an older install | Remove the old package, then install 3.0.0. The bundle keeps its double-mount guard. |
+| `dsh: command not found` | Install DSH first, or use `npx -y --package @deepseek-ai/dsh dsh plugin --profile desktop add @xxxyz/dsh-mcp-manager@latest`. |
 
 </details>
 
@@ -99,7 +95,7 @@ Or bump the version in `~/.dsh/profiles/web/package.json` and run `pnpm install`
 <summary><b>Uninstall</b></summary>
 
 ```sh
-dsh plugin --profile web remove @xxxyz/dsh-mcp-manager
+dsh plugin --profile <profile> remove @xxxyz/dsh-mcp-manager
 ```
 
 Then restart DSH.
@@ -108,58 +104,69 @@ Then restart DSH.
 
 ## 📖 Usage
 
-Open **Settings → MCP 管理**:
+**Settings → MCP servers**
 
-- **Add a server**: enter `serverName` (unique, 1–32 chars of `[A-Za-z0-9_-]`), the transport and its fields (`streamable-http` → URL / headers; `stdio` → command / args / env), and the level (project / global). The form validates format and duplicate names.
-- Each card shows live status, the connection target and the tool count; you can **enable / disable**, **restart**, **edit** and **delete**.
-- **Backup / Restore**: export the configuration as JSON with one click, or paste JSON to import (merges new entries, skips existing ones).
-- The file path being edited is shown at the bottom of the page.
+- **Add**: a unique `serverName` (1–32 characters of `[A-Za-z0-9_-]`), transport, and its fields (`streamable-http`: URL / headers; `stdio`: command / args / env / cwd). The server is written to the **current profile**; there is no level selector. Advanced options cover timeouts, startup failure policy, instruction byte limits, and reconnection.
+- Each card shows live status, target, Loader phase, and tool count; use **enable/disable**, **restart**, **edit**, **delete**, or **tool preview**.
+- **Backup / restore** exports JSON or imports a pasted document; existing names and ids are skipped.
+- The footer lists the patch files being edited.
 
-Open **Settings → Skills 管理**:
+**Settings → Skills**
 
-- **Browse / Search**: lists every DSH skill grouped by source (project / runtime / custom / user / built-in / plugin-bundled), collapsed per provider; the search box filters live. User-level skills under `~/.dsh/skills/` (2.2.0+) are listed too — even though the official scoped layer never exposes them to scope-less queries.
-- **Enable / Disable**: toggle any skill in one click — implemented with a rank-0 override provider (`dsh-mcp-manager-override`), so every source level (including project-level and user-level filesystem skills) can be disabled.
-- **Persistence**: disabled state is written to `<profileDir>/dsh-skill-manager.json`, survives restarts, and applies live via HMR.
+- **Browse/search**: aggregates global skills and every live session's preset-scope skills, grouped by source (project root, runtime, custom root, user root, bundled root, plugin-provided), then by provider. Search filters live.
+- **Enable/disable**: every skill can be toggled. Project-root, user-root, and plugin skills are genuinely shadowed by rank-0 providers registered in the global layer and in each agent scope.
+- **Persistence**: state is written to `<profileDir>/dsh-skill-manager.json` and survives restart; changes apply through HMR.
 
 ## ⚙️ Configuration
 
-Configuration of the plugin itself on its loader row:
+The plugin's own loader row (`Config` validated by Schemastery):
 
-| Field | Description |
+| Field | Meaning |
 |---|---|
-| `version` | The loader row's `config.version`, only used to trigger an HMR re-apply; auto-managed by the bundle channel — no manual edits needed. |
-| `token` | **Optional** access token (write-op auth, defense in depth). When set, state-changing ops (add/edit/remove/enable/restart/import/export/skill-toggle) require the `x-dsh-token: <token>` header; the settings pages provide a token input (stored in browser localStorage). Can also be set via the `DSH_MCP_MANAGER_TOKEN` env var. Off by default. |
+| `token` | Optional access token for state-changing HTTP operations. When set, add/edit/remove/enable/restart/export/import/skill-toggle require `x-dsh-token: <token>`. The settings page has a token field stored in browser localStorage; `DSH_MCP_MANAGER_TOKEN` works too. Off by default. |
 
-> **Why is the token needed?** The plugin's CSRF protection only blocks *cross-site browser* requests — it assumes DSH web listens on localhost (`127.0.0.1`) only. Once you expose port 3080 to a LAN or the public internet (port forwarding, a `dsh-web-lan-access`-style plugin, or a reverse proxy), **anyone who can reach the port gets full write access**: they can add/modify MCP servers, and a `stdio` server's `command` field accepts any executable — i.e. **remote arbitrary code execution**. The token is the last gate for exactly this exposure scenario: without the secret, no write op succeeds even when the port is exposed, so commands cannot be injected. Local single-machine use does not need it.
+> **Why a token?** The CSRF gate only stops cross-site browser requests and assumes DSH Web listens on localhost. If the port is exposed through port forwarding, a LAN-access plugin, or a reverse proxy, anyone reaching it would otherwise get full write access — and a `stdio` server's `command` can be any executable, which is remote code execution. The token is the last gate for that deployment. Local single-machine use does not need it.
+>
+> **Note**: the token protects writes only. Read endpoints such as `mcpm-list`, `mcpm-tools`, and `skill-list` remain open so the settings page can render; `mcpm-list` returns `env` / `headers` values. If the port is exposed and reads must be authenticated too, add authentication at the network layer or do not expose the DSH port.
 
-The loader row must be an **`insert` block** (in DSH's patch dialect a plain `- id:` row only overrides existing entries and can never add a new plugin):
+Use an `insert` block to mount the plugin; a bare `- id:` row only overrides an existing entry:
 
 ```yaml
 - insert:
     - id: dsh-mcp-manager
       name: '@xxxyz/dsh-mcp-manager'
       config:
-        token: your-access-token   # optional: enable write-op auth
+        token: your-token   # optional
 ```
 
-> You don't need to write this row manually — `dsh plugin add` inserts it automatically via the bundle patch (see `cordis.patch.yml`).
+The bundle patch from `dsh plugin add` writes this row automatically.
 
 ## 🏗️ Architecture
 
-- **Host half** (`src/index.ts` → `lib/index.js`, an object-form Cordis plugin `{name, inject, apply}`): `inject` declares `timer/fs/settings/sandboxPolicy/webServer/tools` — the framework guarantees they are ready and reloads the plugin if one disappears, which is how the plugin survives DSH upgrades. Registers four model tools (`ctx.tools.register(defineTool(...))`) and the exact route `POST /dsh-mcp-manager/api` (scoped cleanup via `ctx.effect`); line-level CRUD on `cordis.patch.yml` (mini YAML parser + per-file write lock).
-- **Browser half** (`lib/client.js`, ModuleLoader CJS bundle): registers the Settings → MCP 管理 page (`settings.section` slot, order 16) and talks to the host through same-origin `fetch('/dsh-mcp-manager/api')` — it never touches the filesystem directly.
-- **Loader row**: inserted automatically by `dsh plugin add`'s bundle patch; the client-modules service scans enabled entries and serves the client bundle.
+- **Host** (`src/index.ts` → `lib/index.js`, 0.2.x named exports `name` / `inject` / `Config` / `apply`):
+  - Hard dependencies: `timer`, `fs`, `tools`. `skills`, `agents`, `pluginManager`, `configEditor`, and `webServer` are optional through `ctx.inject([...])`, so their registrations follow the service lifetime.
+  - MCP: writes only the current profile; profile rows prefer `configEditor` for writes and `pluginManager` for toggles; rows from `~/.dsh/cordis.patch.yml` are shown read-only because the home layer outranks profile and is not a supported write target.
+  - Skills: one global provider plus one rank-0 provider per agent scope; `skill-list` aggregates the global layer, agent scopes, and user skill roots.
+  - Registers four model tools (`ctx.tools.register(defineTool(...))`) and the exact `POST /dsh-mcp-manager/api` route, both scoped through `ctx.effect`.
+- **Browser** (`lib/client.js`, ModuleLoader CJS bundle, module id = package name):
+  - `inject = ['slots','locale','timer']`; `ctx.locale.register('dsh.mcpManager', { zh, en })`.
+  - Registers **Settings → MCP servers** (`settings.section`, order 16) and **Settings → Skills** (order 17).
+  - Talks to the Host over same-origin `fetch('/dsh-mcp-manager/api')`; never touches the filesystem; styles use only `--dsw-alias-*` tokens.
+- **Loader row**: inserted by the bundle patch; `client-modules` attaches the browser half by package name.
 
 ## 🛠️ Development
 
 ```bash
 npm install
-npm run build        # tsc -p tsconfig.json → lib/index.js (host half)
+npm run build        # tsc -p tsconfig.json → lib/index.js
+npm test             # build + node --test (37 tests)
+npm run lint         # node --check lib/client.js && node --check lib/index.js
 ```
 
-- Host source: `src/index.ts`; browser bundle: `lib/client.js` (hand-written, no build step)
-- The package is pure JS, zero-dependency and cross-platform; building only needs the devDependencies (typescript, `@deepseek-ai/cordis`, `@deepseek-ai/dsh-tools`, `@types/node`)
-- Publishing: `npm version patch && npm publish` (`prepublishOnly` builds automatically; the scoped package has `publishConfig.access: public`)
+- Host source: `src/index.ts`; browser bundle: `lib/client.js` (hand-written, no build step).
+- Runtime dependencies: `yaml` (document-level editing) and `@deepseek-ai/schemastery` (Config); `@deepseek-ai/dsh-tools` is provided by the DSH runtime.
+- Test fixtures: `tests/helpers.mjs` (fake Cordis ctx); `tests/client.test.mjs` renders both pages with ReactDOMServer as a smoke test.
+- Release: `npm version patch && npm publish` (`prepublishOnly` builds; the scoped package sets `publishConfig.access: public`).
 
 ## License
 

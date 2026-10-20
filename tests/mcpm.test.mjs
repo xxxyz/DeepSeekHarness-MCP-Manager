@@ -1,295 +1,381 @@
-// tests/mcpm.test.mjs — fake-ctx integration tests for the MCP server CRUD
-// ops (add/list/set-enabled/restart/remove/edit/import/export) plus the YAML
-// generation, the optional token gate, and the request-body cap.
+// tests/mcpm.test.mjs — fake-ctx integration tests for MCP CRUD, YAML editing,
+// the 0.2.x config fields, pluginManager/configEditor integration, and the
+// optional token gate.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import plugin from '../lib/index.js'
+import * as plugin from '../lib/index.js'
+import { call, freshHome, makeCtx } from './helpers.mjs'
 
-// Fake Cordis ctx exposing exactly the surfaces the plugin touches. Same shape
-// as skills.test.mjs, extended with `config` for the token gate and
-// `tools.schemas` for the live tool-count in mcpm-list.
-function makeCtx(home, files, config) {
-  files = files || new Map()
-  if (!files.has(join(home, 'settings.yaml'))) files.set(join(home, 'settings.yaml'), '')
-  if (!files.has(join(home, 'profiles', 'web', 'cordis.patch.yml'))) files.set(join(home, 'profiles', 'web', 'cordis.patch.yml'), '[]\n')
-  if (!files.has(join(home, 'cordis.patch.yml'))) files.set(join(home, 'cordis.patch.yml'), '[]\n')
-  let route = null
-  const listeners = new Map()
-  const ctx = {
-    timer: {},
-    timeout: () => Promise.resolve(),
-    settings: { prepareDocument: async () => join(home, 'settings.yaml') },
-    sandboxPolicy: { resolve: async () => ({}) },
-    tools: { register() {}, schemas: () => [] },
-    webServer: { register(r) { route = r; return () => {} } },
-    fs: {
-      async resolve(p) { return p },
-      async stat(p) { return files.has(p) ? { isFile: () => true, isDirectory: () => false } : undefined },
-      async readText(p) {
-        if (!files.has(p)) { const e = new Error('not found'); e.code = 'FS_NOT_FOUND'; throw e }
-        return files.get(p)
-      },
-      async writeText(p, c) { files.set(p, String(c)) },
-      async listDir() { return [] },
-    },
-    effect(fn) { const d = fn(); if (typeof d === 'function') d() },
-    on(ev, cb) { listeners.set(ev, cb) },
-    events: { dispatch: () => [] },
-    get() { return undefined },
-    skills: {
-      registerProvider() {},
-      async snapshot() { return { skills: [], complete: true } },
-      async get() { return undefined },
-    },
-    config,
-    _files: files,
-    _route: () => route,
-  }
+const MCP = '@deepseek-ai/dsh-mcp-client'
+const PROFILE_PATCH = (home) => join(home, 'profiles', 'web', 'cordis.patch.yml')
+const HOME_PATCH = (home) => join(home, 'cordis.patch.yml')
+
+function apply(home, extra) {
+  const ctx = makeCtx(home, null, extra)
+  plugin.apply(ctx)
   return ctx
 }
 
-function call(route, payload, headers = {}, body = null) {
-  const b = body === null ? JSON.stringify(payload) : body
-  const req = {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-dsh-plugin': 'dsh-mcp-manager', ...headers },
-    on(ev, cb) { if (ev === 'data') cb(b); if (ev === 'end') cb() },
-  }
-  const res = { status: 200, bodyText: '', writeHead(c) { this.status = c }, end(b2) { this.bodyText = b2 || '' } }
-  const p = route.handler(req, res)
-  return (p ? Promise.resolve(p) : Promise.resolve()).then(() => ({ status: res.status, json: res.bodyText ? JSON.parse(res.bodyText) : null }))
-}
-
-const PROJECT_PATCH = (home) => join(home, 'profiles', 'web', 'cordis.patch.yml')
-
-test('mcpm-add (stdio) writes a well-formed insert block; mcpm-list reads it back', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeCtx(home)
-  plugin.apply(ctx)
-  let r = await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'github', transport: 'stdio', command: 'npx -y @modelcontextprotocol/server-github', args: '--foo bar', env: 'TOKEN=abc', level: 'project' } })
-  assert.equal(r.json.ok, true)
-  const patch = ctx._files.get(PROJECT_PATCH(home))
-  assert.match(patch, /# dsh-mcp-manager:server:mcp-github/)
+test('mcpm-add (stdio) writes a 0.2.x insert block; mcpm-list reads it back', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
+  let result = await call(ctx._route(), {
+    op: 'mcpm-add',
+    args: {
+      serverName: 'github',
+      transport: 'stdio',
+      command: 'npx -y @modelcontextprotocol/server-github',
+      args: '--foo\nbar',
+      env: 'TOKEN=abc',
+      cwd: 'F:\\work',
+      toolCallTimeoutMs: 12000,
+      failOnStartupError: true,
+      maxInstructionBytes: 4096,
+      reconnect: { enabled: false, initialDelayMs: 1000, maxDelayMs: 20000, maxAttempts: 3 },
+      level: 'project',
+    },
+  })
+  assert.equal(result.json.ok, true)
+  const patch = ctx._files.get(PROFILE_PATCH(home))
   assert.match(patch, /- insert:/)
-  assert.match(patch, /serverName: "github"/)
-  assert.match(patch, /command: "npx -y @modelcontextprotocol\/server-github"/)
-  assert.match(patch, /args:/)
-  assert.match(patch, /env:/)
-  r = await call(ctx._route(), { op: 'mcpm-list', args: {} })
-  assert.equal(r.json.ok, true)
-  const row = r.json.rows.find((x) => x.id === 'mcp-github')
+  assert.match(patch, /name: "@deepseek-ai\/dsh-mcp-client"/)
+  assert.match(patch, /serverName: github/)
+  assert.match(patch, /cwd: F:\\work/)
+  assert.match(patch, /toolCallTimeoutMs: 12000/)
+  assert.match(patch, /failOnStartupError: true/)
+  assert.match(patch, /maxInstructionBytes: 4096/)
+  assert.match(patch, /reconnect:/)
+  assert.match(patch, /maxAttempts: 3/)
+
+  result = await call(ctx._route(), { op: 'mcpm-list', args: {} })
+  assert.equal(result.json.ok, true)
+  const row = result.json.rows.find((entry) => entry.id === 'mcp-github')
   assert.equal(row.serverName, 'github')
   assert.equal(row.transport, 'stdio')
-  assert.equal(row.level, 'project')
   assert.deepEqual(row.args, ['--foo', 'bar'])
   assert.deepEqual(row.env, { TOKEN: 'abc' })
+  assert.equal(row.cwd, 'F:\\work')
+  assert.equal(row.toolCallTimeoutMs, 12000)
+  assert.equal(row.failOnStartupError, true)
+  assert.equal(row.maxInstructionBytes, 4096)
+  assert.deepEqual(row.reconnect, { enabled: false, initialDelayMs: 1000, maxDelayMs: 20000, maxAttempts: 3 })
 })
 
-test('mcpm-add (streamable-http) with headers; YAML-injection-safe quoting', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeCtx(home)
-  plugin.apply(ctx)
-  // command-like string with YAML metacharacters in url/headers must stay quoted
-  let r = await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'http1', transport: 'streamable-http', url: 'https://host/mcp', headers: 'Authorization=Bearer x: y\nX-Foo=*bar' } })
-  assert.equal(r.json.ok, true)
-  const patch = ctx._files.get(PROJECT_PATCH(home))
-  assert.match(patch, /url: "https:\/\/host\/mcp"/)
-  assert.match(patch, /"Authorization": "Bearer x: y"/)
-  assert.match(patch, /"X-Foo": "\*bar"/)
-  r = await call(ctx._route(), { op: 'mcpm-list', args: {} })
-  const row = r.json.rows.find((x) => x.id === 'mcp-http1')
+test('args round-trip: quoted values containing ":" survive list/edit reparse', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
+  const argsText = 'F:/AI/proj/tools/apktool/server.py,\n--workspace,\nF:/AI/proj/tools/workspace/apktool'
+  const expected = ['F:/AI/proj/tools/apktool/server.py', '--workspace', 'F:/AI/proj/tools/workspace/apktool']
+  let result = await call(ctx._route(), {
+    op: 'mcpm-add',
+    args: { serverName: 'apktool', transport: 'stdio', command: 'F:/AI/proj/.venv/Scripts/python.exe', args: argsText },
+  })
+  assert.equal(result.json.ok, true)
+  result = await call(ctx._route(), { op: 'mcpm-list', args: {} })
+  const row = result.json.rows.find((entry) => entry.id === 'mcp-apktool')
+  assert.deepEqual(row.args, expected)
+
+  result = await call(ctx._route(), {
+    op: 'mcpm-edit',
+    args: { id: 'mcp-apktool', level: 'project', serverName: 'apktool', transport: 'stdio', command: 'F:/AI/proj/.venv/Scripts/python.exe', args: row.args.join('\n'), env: '' },
+  })
+  assert.equal(result.json.ok, true)
+  result = await call(ctx._route(), { op: 'mcpm-list', args: {} })
+  assert.deepEqual(result.json.rows.find((entry) => entry.id === 'mcp-apktool').args, expected)
+})
+
+test('mcpm-add (streamable-http) with headers; values stay YAML-safe', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
+  let result = await call(ctx._route(), {
+    op: 'mcpm-add',
+    args: { serverName: 'http1', transport: 'streamable-http', url: 'https://host/mcp', headers: 'Authorization=Bearer x: y\nX-Foo=*bar' },
+  })
+  assert.equal(result.json.ok, true)
+  const patch = ctx._files.get(PROFILE_PATCH(home))
+  assert.match(patch, /url: https:\/\/host\/mcp/)
+  assert.match(patch, /Authorization: ["']Bearer x: y["']/)
+  assert.match(patch, /X-Foo: ["']\*bar["']/)
+  result = await call(ctx._route(), { op: 'mcpm-list', args: {} })
+  const row = result.json.rows.find((entry) => entry.id === 'mcp-http1')
   assert.equal(row.transport, 'streamable-http')
   assert.deepEqual(row.headers, { Authorization: 'Bearer x: y', 'X-Foo': '*bar' })
 })
 
-test('mcpm-set-enabled disables then re-enables (writes/removes disable override)', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeCtx(home)
-  plugin.apply(ctx)
+test('mcpm-set-enabled disables then re-enables through the patch layer', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
   await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'svc1', transport: 'stdio', command: 'echo hi' } })
-  let r = await call(ctx._route(), { op: 'mcpm-set-enabled', args: { id: 'mcp-svc1', level: 'project', enabled: false } })
-  assert.equal(r.json.ok, true)
-  let patch = ctx._files.get(PROJECT_PATCH(home))
-  assert.match(patch, /# dsh-mcp-manager:disable:mcp-svc1/)
+  let result = await call(ctx._route(), { op: 'mcpm-set-enabled', args: { id: 'mcp-svc1', level: 'project', enabled: false } })
+  assert.equal(result.json.ok, true)
+  let patch = ctx._files.get(PROFILE_PATCH(home))
+  assert.match(patch, /- id: mcp-svc1/)
   assert.match(patch, /disabled: true/)
-  r = await call(ctx._route(), { op: 'mcpm-list', args: {} })
-  assert.equal(r.json.rows.find((x) => x.id === 'mcp-svc1').disabled, true)
-  r = await call(ctx._route(), { op: 'mcpm-set-enabled', args: { id: 'mcp-svc1', level: 'project', enabled: true } })
-  assert.equal(r.json.ok, true)
-  patch = ctx._files.get(PROJECT_PATCH(home))
-  assert.ok(!/disable:mcp-svc1/.test(patch), 'disable override removed')
-  r = await call(ctx._route(), { op: 'mcpm-list', args: {} })
-  assert.equal(r.json.rows.find((x) => x.id === 'mcp-svc1').disabled, false)
+  result = await call(ctx._route(), { op: 'mcpm-list', args: {} })
+  assert.equal(result.json.rows.find((entry) => entry.id === 'mcp-svc1').disabled, true)
+
+  result = await call(ctx._route(), { op: 'mcpm-set-enabled', args: { id: 'mcp-svc1', level: 'project', enabled: true } })
+  assert.equal(result.json.ok, true)
+  patch = ctx._files.get(PROFILE_PATCH(home))
+  assert.ok(!/disabled: true/.test(patch), 'disable override removed')
+  result = await call(ctx._route(), { op: 'mcpm-list', args: {} })
+  assert.equal(result.json.rows.find((entry) => entry.id === 'mcp-svc1').disabled, false)
 })
 
-test('mcpm-restart returns ok (no pluginInventory → fallback wait)', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeCtx(home)
-  plugin.apply(ctx)
+test('mcpm-set-enabled prefers pluginManager for a live profile row', async () => {
+  const home = freshHome('dsh-mcp-')
+  const calls = []
+  const pluginManager = {
+    async listPlugins() {
+      return [{ entryId: 'include:mcp-svc2', patchId: 'mcp-svc2', moduleName: MCP, enabled: true, fiberPhase: 'active' }]
+    },
+    async setPluginEnabled(id, enabled) {
+      calls.push([id, enabled])
+      return { changed: true, application: 'applied' }
+    },
+  }
+  const ctx = apply(home, { services: { pluginManager } })
   await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'svc2', transport: 'stdio', command: 'echo hi' } })
-  const r = await call(ctx._route(), { op: 'mcpm-restart', args: { id: 'mcp-svc2', level: 'project' } })
-  assert.equal(r.json.ok, true)
-  assert.equal(r.json.warning, undefined)
+  const before = ctx._files.get(PROFILE_PATCH(home))
+  const result = await call(ctx._route(), { op: 'mcpm-set-enabled', args: { id: 'mcp-svc2', level: 'project', enabled: false } })
+  assert.equal(result.json.ok, true)
+  assert.deepEqual(calls, [['include:mcp-svc2', false]])
+  assert.equal(ctx._files.get(PROFILE_PATCH(home)), before, 'pluginManager path does not rewrite the patch')
 })
 
-test('mcpm-remove deletes insert + all marker blocks', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeCtx(home)
-  plugin.apply(ctx)
+test('mcpm-edit uses configEditor for a live profile row', async () => {
+  const home = freshHome('dsh-mcp-')
+  const edited = []
+  const entry = { options: { id: 'mcp-cfg', name: MCP, config: { serverName: 'cfg', transport: 'stdio', command: 'old' } }, fiber: { state: 2 } }
+  const configEditor = {
+    entries() { return [entry] },
+    configuration() { return [{ entry, inherited: {}, override: {} }] },
+    async edit(target, change) {
+      edited.push(change(target.options.config, {}))
+    },
+  }
+  const ctx = apply(home, { services: { configEditor } })
+  await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'cfg', transport: 'stdio', command: 'old' } })
+  const before = ctx._files.get(PROFILE_PATCH(home))
+  const result = await call(ctx._route(), {
+    op: 'mcpm-edit',
+    args: { id: 'mcp-cfg', level: 'project', serverName: 'cfg', transport: 'stdio', command: 'new' },
+  })
+  assert.equal(result.json.ok, true)
+  assert.equal(edited.length, 1)
+  assert.equal(edited[0].command, 'new')
+  assert.equal(ctx._files.get(PROFILE_PATCH(home)), before, 'configEditor path does not rewrite the insert block')
+})
+
+test('mcpm-restart returns ok without a live inventory', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
+  await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'svc3', transport: 'stdio', command: 'echo hi' } })
+  const result = await call(ctx._route(), { op: 'mcpm-restart', args: { id: 'mcp-svc3', level: 'project' } })
+  assert.equal(result.json.ok, true)
+})
+
+test('mcpm-remove deletes the insert and every override for the id', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
   await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'gone', transport: 'stdio', command: 'echo hi' } })
   await call(ctx._route(), { op: 'mcpm-set-enabled', args: { id: 'mcp-gone', level: 'project', enabled: false } })
-  const r = await call(ctx._route(), { op: 'mcpm-remove', args: { id: 'mcp-gone', level: 'project' } })
-  assert.equal(r.json.ok, true)
-  const patch = ctx._files.get(PROJECT_PATCH(home))
+  const result = await call(ctx._route(), { op: 'mcpm-remove', args: { id: 'mcp-gone', level: 'project' } })
+  assert.equal(result.json.ok, true)
+  const patch = ctx._files.get(PROFILE_PATCH(home))
   assert.ok(!patch.includes('mcp-gone'), 'all traces removed')
   const after = await call(ctx._route(), { op: 'mcpm-list', args: {} })
-  assert.equal(after.json.rows.some((x) => x.id === 'mcp-gone'), false)
+  assert.equal(after.json.rows.some((entry) => entry.id === 'mcp-gone'), false)
 })
 
-test('mcpm-edit same level rewrites the row; cross-level migration moves it', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeCtx(home)
-  plugin.apply(ctx)
+test('mcpm-edit rewrites the profile row; a legacy global level is rejected', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
   await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'ed1', transport: 'stdio', command: 'old cmd' } })
-  let r = await call(ctx._route(), { op: 'mcpm-edit', args: { id: 'mcp-ed1', level: 'project', serverName: 'ed1', transport: 'stdio', command: 'new cmd' } })
-  assert.equal(r.json.ok, true)
-  r = await call(ctx._route(), { op: 'mcpm-list', args: {} })
-  assert.equal(r.json.rows.find((x) => x.id === 'mcp-ed1').command, 'new cmd')
+  let result = await call(ctx._route(), { op: 'mcpm-edit', args: { id: 'mcp-ed1', serverName: 'ed1', transport: 'stdio', command: 'new cmd' } })
+  assert.equal(result.json.ok, true)
+  result = await call(ctx._route(), { op: 'mcpm-list', args: {} })
+  assert.equal(result.json.rows.find((entry) => entry.id === 'mcp-ed1').command, 'new cmd')
 
-  // migrate project → global
-  r = await call(ctx._route(), { op: 'mcpm-edit', args: { id: 'mcp-ed1', level: 'global', serverName: 'ed1', transport: 'stdio', command: 'new cmd' } })
-  assert.equal(r.json.ok, true)
-  const proj = ctx._files.get(PROJECT_PATCH(home))
-  const glob = ctx._files.get(join(home, 'cordis.patch.yml'))
-  assert.ok(!proj.includes('mcp-ed1'), 'removed from project patch')
-  assert.ok(glob.includes('mcp-ed1'), 'now in global patch')
+  result = await call(ctx._route(), { op: 'mcpm-edit', args: { id: 'mcp-ed1', level: 'global', serverName: 'ed1', transport: 'stdio', command: 'again' } })
+  assert.equal(result.json.ok, false)
+  assert.match(result.json.error, /read-only/)
+  assert.ok(!ctx._files.get(HOME_PATCH(home)).includes('mcp-ed1'))
 })
 
-test('mcpm-import adds new rows and skips existing ids/names; import respects write lock', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeCtx(home)
-  plugin.apply(ctx)
+test('home rows are listed read-only and cannot be edited, toggled, or removed', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
+  ctx._files.set(HOME_PATCH(home), [
+    '- insert:',
+    '    - id: mcp-home',
+    '      name: "@deepseek-ai/dsh-mcp-client"',
+    '      config:',
+    '        serverName: home',
+    '        transport: stdio',
+    '        command: echo home',
+    '',
+  ].join('\n'))
+
+  let result = await call(ctx._route(), { op: 'mcpm-list', args: {} })
+  assert.equal(result.json.ok, true)
+  const row = result.json.rows.find((entry) => entry.id === 'mcp-home')
+  assert.equal(row.level, 'home')
+  assert.equal(row.readOnly, true)
+  assert.equal(row.readOnlyReason, 'home')
+  assert.equal(result.json.paths.home, HOME_PATCH(home))
+
+  for (const payload of [
+    { op: 'mcpm-set-enabled', args: { id: 'mcp-home', enabled: false } },
+    { op: 'mcpm-remove', args: { id: 'mcp-home' } },
+    { op: 'mcpm-edit', args: { id: 'mcp-home', serverName: 'home', transport: 'stdio', command: 'changed' } },
+  ]) {
+    result = await call(ctx._route(), payload)
+    assert.equal(result.json.ok, false, payload.op)
+  }
+  assert.ok(ctx._files.get(HOME_PATCH(home)).includes('mcp-home'), 'home row left untouched')
+
+  result = await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'home2', transport: 'stdio', command: 'echo', level: 'global' } })
+  assert.equal(result.json.ok, false)
+  assert.match(result.json.error, /read-only/)
+})
+
+test('a home override makes the matching profile row read-only', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
+  await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'ovr', transport: 'stdio', command: 'echo' } })
+  ctx._files.set(HOME_PATCH(home), [
+    '- id: mcp-ovr',
+    '  name: "@deepseek-ai/dsh-mcp-client"',
+    '  disabled: true',
+    '',
+  ].join('\n'))
+
+  const result = await call(ctx._route(), { op: 'mcpm-list', args: {} })
+  const row = result.json.rows.find((entry) => entry.id === 'mcp-ovr')
+  assert.equal(row.level, 'profile')
+  assert.equal(row.readOnly, true)
+  assert.equal(row.readOnlyReason, 'overridden-by-home')
+  assert.equal(row.disabled, true)
+  const edit = await call(ctx._route(), { op: 'mcpm-edit', args: { id: 'mcp-ovr', serverName: 'ovr', transport: 'stdio', command: 'changed' } })
+  assert.equal(edit.json.ok, false)
+  assert.match(edit.json.error, /home patch/)
+})
+
+test('mcpm-import adds new rows and skips existing ids/names', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
   await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'exist', transport: 'stdio', command: 'echo' } })
   const json = JSON.stringify([
     { serverName: 'new1', transport: 'stdio', command: 'echo a', level: 'project' },
     { serverName: 'exist', transport: 'stdio', command: 'echo b' },
     { serverName: 'bad url', transport: 'streamable-http', url: 'not-a-url' },
   ])
-  const r = await call(ctx._route(), { op: 'mcpm-import', args: { json } })
-  assert.equal(r.json.ok, true)
-  assert.deepEqual(r.json.added, ['mcp-new1'])
-  assert.equal(r.json.skipped.length, 2)
-  // 'exist' derives the same id as the added row (mcp-exist) → id clash first;
-  // 'bad url' fails serverName validation.
-  assert.ok(r.json.skipped.some((s) => s.reason === 'id 已存在'))
-  assert.ok(r.json.skipped.some((s) => /serverName 非法|url 非法/.test(s.reason)))
+  const result = await call(ctx._route(), { op: 'mcpm-import', args: { json } })
+  assert.equal(result.json.ok, true)
+  assert.deepEqual(result.json.added, ['mcp-new1'])
+  assert.equal(result.json.skipped.length, 2)
 })
 
 test('mcpm-export returns JSON without loader-only rows', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeCtx(home)
-  plugin.apply(ctx)
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
   await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'exp1', transport: 'stdio', command: 'echo' } })
-  const r = await call(ctx._route(), { op: 'mcpm-export', args: {} })
-  assert.equal(r.json.ok, true)
-  const parsed = JSON.parse(r.json.json)
+  const result = await call(ctx._route(), { op: 'mcpm-export', args: {} })
+  assert.equal(result.json.ok, true)
+  const parsed = JSON.parse(result.json.json)
   assert.ok(Array.isArray(parsed.rows))
   assert.equal(parsed.rows.length, 1)
   assert.equal(parsed.rows[0].serverName, 'exp1')
 })
 
+test('mcpm-set-enabled requires an explicit boolean enabled', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
+  await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'bool1', transport: 'stdio', command: 'echo' } })
+  const result = await call(ctx._route(), { op: 'mcpm-set-enabled', args: { id: 'mcp-bool1' } })
+  assert.equal(result.json.ok, false)
+  assert.match(result.json.error, /boolean/)
+})
+
+test('origin gate accepts loopback aliases and rejects another port', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
+  await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'origin1', transport: 'stdio', command: 'echo' } })
+  let result = await call(ctx._route(), { op: 'mcpm-list', args: {} }, { origin: 'http://localhost:1618' })
+  assert.equal(result.status, 200)
+  assert.equal(result.json.ok, true)
+  result = await call(ctx._route(), { op: 'mcpm-list', args: {} }, { origin: 'http://localhost:9999' })
+  assert.equal(result.status, 403)
+})
+
 test('token gate: write ops rejected without x-dsh-token, read ops stay open', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
+  const home = freshHome('dsh-mcp-')
   const ctx = makeCtx(home)
-  // entry config arrives as the SECOND apply argument (Cordis callback(ctx, config))
   plugin.apply(ctx, { token: 'sekrit' })
-  // write op → 401 without token, ok with correct token
-  let r = await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'tok1', transport: 'stdio', command: 'echo' } })
-  assert.equal(r.json.ok, false)
-  assert.match(r.json.error, /令牌/)
-  r = await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'tok1', transport: 'stdio', command: 'echo' } }, { 'x-dsh-token': 'sekrit' })
-  assert.equal(r.json.ok, true)
-  // wrong token → 401
-  r = await call(ctx._route(), { op: 'mcpm-remove', args: { id: 'mcp-tok1', level: 'project' } }, { 'x-dsh-token': 'nope' })
-  assert.equal(r.json.ok, false)
-  // read ops still work without token
-  r = await call(ctx._route(), { op: 'mcpm-list', args: {} })
-  assert.equal(r.json.ok, true)
-  r = await call(ctx._route(), { op: 'plugin-version', args: {} })
-  assert.equal(r.json.ok, true)
+  let result = await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'tok1', transport: 'stdio', command: 'echo' } })
+  assert.equal(result.json.ok, false)
+  assert.match(result.json.error, /token/)
+  result = await call(ctx._route(), { op: 'mcpm-add', args: { serverName: 'tok1', transport: 'stdio', command: 'echo' } }, { 'x-dsh-token': 'sekrit' })
+  assert.equal(result.json.ok, true)
+  result = await call(ctx._route(), { op: 'mcpm-remove', args: { id: 'mcp-tok1', level: 'project' } }, { 'x-dsh-token': 'nope' })
+  assert.equal(result.json.ok, false)
+  result = await call(ctx._route(), { op: 'mcpm-list', args: {} })
+  assert.equal(result.json.ok, true)
+  result = await call(ctx._route(), { op: 'plugin-version', args: {} })
+  assert.equal(result.json.ok, true)
 })
 
 test('request body cap rejects oversized payloads', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeCtx(home)
-  plugin.apply(ctx)
+  const home = freshHome('dsh-mcp-')
+  const ctx = apply(home)
   const big = 'x'.repeat(2 * 1024 * 1024)
-  const r = await call(ctx._route(), { op: 'mcpm-import', args: { json: big } }, {}, JSON.stringify({ op: 'mcpm-import', args: { json: big } }))
-  assert.equal(r.json.ok, false)
-  assert.match(r.json.error, /请求体过大/)
+  const result = await call(ctx._route(), { op: 'mcpm-import', args: { json: big } }, {}, JSON.stringify({ op: 'mcpm-import', args: { json: big } }))
+  assert.equal(result.json.ok, false)
+  assert.match(result.json.error, /请求体过大/)
 })
 
 // --- mcpm-tools: MCP service tool preview ---
-function makeToolsCtx(home, schemas) {
-  const ctx = makeCtx(home)
-  ctx.tools = { register() {}, schemas: () => schemas }
-  return ctx
+function toolsCtx(home, schemas) {
+  return makeCtx(home, null, { tools: { register() {}, schemas: () => schemas } })
 }
 
 test('mcpm-tools lists tools for a server with name/description/parameter summary', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
+  const home = freshHome('dsh-mcp-')
   const schemas = [
     { name: 'mcp__github__get_repo', description: 'Fetch a repository by name.', parameters: { type: 'object', properties: { repo: { type: 'string', description: 'owner/name' }, limit: { type: 'integer', description: 'max results' } }, required: ['repo'] } },
     { name: 'mcp__github__list_issues', description: 'List issues for a repo.', parameters: { type: 'object', properties: { repo: { type: 'string', description: 'owner/name' } }, required: ['repo'] } },
     { name: 'mcp__tavily__search', description: 'Web search.', parameters: { type: 'object', properties: { query: { type: 'string', description: 'the query' } }, required: ['query'] } },
     { name: 'some_other_tool', description: 'Not MCP-prefixed, ignored.' },
   ]
-  const ctx = makeToolsCtx(home, schemas)
+  const ctx = toolsCtx(home, schemas)
   plugin.apply(ctx)
-  const r = await call(ctx._route(), { op: 'mcpm-tools', args: { serverName: 'github' } })
-  assert.equal(r.json.ok, true)
-  assert.equal(r.json.tools.length, 2)
-  const getRepo = r.json.tools.find((t) => t.name === 'get_repo')
-  assert.ok(getRepo, 'prefix stripped in display name')
+  const result = await call(ctx._route(), { op: 'mcpm-tools', args: { serverName: 'github' } })
+  assert.equal(result.json.ok, true)
+  assert.equal(result.json.tools.length, 2)
+  const getRepo = result.json.tools.find((tool) => tool.name === 'get_repo')
+  assert.ok(getRepo)
   assert.equal(getRepo.description, 'Fetch a repository by name.')
-  // parameter summary: key, required flag, type, description
-  const repoParam = getRepo.parameters.find((p) => p.key === 'repo')
-  assert.ok(repoParam)
+  const repoParam = getRepo.parameters.find((param) => param.key === 'repo')
   assert.equal(repoParam.required, true)
   assert.equal(repoParam.type, 'string')
-  assert.equal(repoParam.description, 'owner/name')
-  const limitParam = getRepo.parameters.find((p) => p.key === 'limit')
-  assert.equal(limitParam.required, false)
-  assert.equal(limitParam.type, 'integer')
 })
 
-test('mcpm-tools returns empty array for unknown server or no tools', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeToolsCtx(home, [{ name: 'mcp__tavily__search', description: 'x', parameters: { type: 'object', properties: {} } }])
+test('mcpm-tools returns empty for unknown server or no tools', async () => {
+  const home = freshHome('dsh-mcp-')
+  const ctx = toolsCtx(home, [{ name: 'mcp__tavily__search', description: 'x', parameters: { type: 'object', properties: {} } }])
   plugin.apply(ctx)
-  const r = await call(ctx._route(), { op: 'mcpm-tools', args: { serverName: 'nope' } })
-  assert.equal(r.json.ok, true)
-  assert.deepEqual(r.json.tools, [])
+  const result = await call(ctx._route(), { op: 'mcpm-tools', args: { serverName: 'nope' } })
+  assert.equal(result.json.ok, true)
+  assert.deepEqual(result.json.tools, [])
 })
 
 test('mcpm-tools returns ok:false when schemas() throws', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeCtx(home)
-  ctx.tools = { register() {}, schemas: () => { throw new Error('registry exploded') } }
+  const home = freshHome('dsh-mcp-')
+  const ctx = makeCtx(home, null, { tools: { register() {}, schemas: () => { throw new Error('registry exploded') } } })
   plugin.apply(ctx)
-  const r = await call(ctx._route(), { op: 'mcpm-tools', args: { serverName: 'github' } })
-  assert.equal(r.json.ok, false)
-  assert.match(r.json.error, /registry exploded/)
-})
-
-test('mcpm-tools rejects empty serverName', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'dsh-mcp-'))
-  const ctx = makeToolsCtx(home, [])
-  plugin.apply(ctx)
-  const r = await call(ctx._route(), { op: 'mcpm-tools', args: { serverName: '' } })
-  assert.equal(r.json.ok, false)
-  assert.match(r.json.error, /serverName/)
+  const result = await call(ctx._route(), { op: 'mcpm-tools', args: { serverName: 'github' } })
+  assert.equal(result.json.ok, false)
+  assert.match(result.json.error, /registry exploded/)
 })

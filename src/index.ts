@@ -1,24 +1,38 @@
-// dsh-mcp-manager — host half, written in TypeScript to the DeepSeek Harness
-// plugin development standard (https://deepseek-harness.github.io/deepseek-harness/develop/basic/):
-//   * object-form Cordis plugin: { name, inject, apply } (docs: "对象形式")
-//   * required services declared in `inject` — the framework guarantees they are
-//     ready before apply runs, and reloads the plugin if one disappears
-//   * agent-facing capability exposed as registered tools (ctx.tools.register +
-//     defineTool), the documented way to add model-callable abilities
-//   * UI-facing capability exposed via a webServer exact route (used by the
-//     client half), registered defensively
+// dsh-mcp-manager — host half for DeepSeek Harness 0.2.x.
 //
-// Build: `tsc -p tsconfig.json` compiles this to lib/index.js (the shipped
-// artifact — same convention as DSH's own packages, which ship compiled JS).
+// Modern Cordis plugin shape (DSH 0.2 plugin documentation):
+//   * named exports: `name`, `inject`, `Config`, `apply` — no object-form plugin
+//   * `inject` declares the hard dependencies; optional services are picked up
+//     through `ctx.inject([...], child => ...)` so the plugin stays active in
+//     profiles that do not provide them and their registrations follow the
+//     service lifecycle
+//   * every registration lives in `ctx.effect` / `ctx.on`, so HMR, disable and
+//     update dispose it
+//
+// The plugin owns two surfaces:
+//   * model-facing `mcp_manager_*` tools (ctx.tools.register + defineTool)
+//   * the same-origin HTTP API used by the Web client half
+//
+// MCP rows are ordinary `@deepseek-ai/dsh-mcp-client` loader entries. The host
+// half writes only the current profile's `cordis.patch.yml`; rows from the
+// home patch (`$DSH_HOME/cordis.patch.yml`) are listed read-only because that
+// layer outranks the profile and is not an official management target. On a
+// live profile it prefers `pluginManager` for toggles and `configEditor` for
+// profile config edits, falling back to document-level YAML editing.
+//
+// Build: `tsc -p tsconfig.json` → lib/index.js.
 
-import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
+import z from '@deepseek-ai/schemastery'
+import { isMap, isSeq, parseDocument, type YAMLMap, type YAMLSeq } from 'yaml'
 import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 
 // ---------------------------------------------------------------------------
-// Minimal structural types for the service surfaces this plugin touches.
-// The full contracts live in the corresponding @deepseek-ai packages; these
-// local interfaces keep the build dependency surface small.
+// Minimal structural types for the DSH services this plugin touches. They are
+// deliberately local so the package has no compile-time dependency on the full
+// internal contracts; every call is still guarded at runtime.
 // ---------------------------------------------------------------------------
 
 interface HttpReq {
@@ -37,12 +51,12 @@ interface FsService {
   resolve(path: string): Promise<string>
   stat(path: string): Promise<{ isFile(): boolean; isDirectory(): boolean } | undefined>
   readText(path: string): Promise<string>
-  writeText(path: string, content: string, encoding?: unknown, flag?: unknown, policy?: unknown): Promise<void>
+  writeText(path: string, content: string, expected?: unknown, signal?: unknown, policy?: unknown): Promise<unknown>
   listDir(path: string): Promise<Array<{ name: string }>>
 }
 
 interface SettingsService {
-  prepareDocument(): Promise<unknown>
+  prepareDocument(): Promise<string>
 }
 
 interface SandboxPolicyService {
@@ -50,26 +64,58 @@ interface SandboxPolicyService {
 }
 
 interface WebServerService {
+  getOrigin?(): string
   register(route: { kind: 'exact'; path: string; handler(req: HttpReq, res: HttpRes): void }): () => void
 }
 
 interface ToolsService {
   register(definition: ToolDefinition): () => void
-  schemas(): Array<{ name: string }>
+  schemas(scope?: unknown): Array<{ name: string; description?: string; parameters?: unknown }>
 }
 
 interface PluginInventoryEntry {
   entryId: string
-  moduleName?: string
-  enabled?: boolean
-  fiberPhase?: string
+  patchId?: string
+  moduleName: string
+  enabled: boolean
+  fiberPhase: 'pending' | 'loading' | 'active' | 'failed' | 'unloading' | null
+  readOnlyReason?: string
 }
 
-interface PluginInventoryService {
-  list(): Promise<{ entries: PluginInventoryEntry[] }>
+interface PluginManagerService {
+  listPlugins(): Promise<PluginInventoryEntry[]>
+  setPluginEnabled(id: string, enabled: boolean): Promise<{
+    changed: boolean
+    application: 'applied' | 'restart-required' | 'overridden' | 'failed' | 'cancelled'
+    error?: { code?: string; diagnostic?: string }
+    warnings?: string[]
+  }>
 }
 
-// ---------- Skills management types (minimal surface of ctx.skills) ----------
+interface ConfigEditorEntry {
+  options: { id: string; config?: Record<string, unknown> }
+  fiber?: { state?: number }
+}
+
+interface ConfigEditorService {
+  entries(): ConfigEditorEntry[]
+  edit(entry: ConfigEditorEntry, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>): Promise<void>
+}
+
+interface AgentLike {
+  readonly id: string
+  ctx?: {
+    get(name: string): unknown
+    inject(deps: string[], callback: (child: any) => unknown): { dispose?: () => unknown }
+    effect(fn: () => unknown, label?: string): unknown
+    on(event: string, listener: (...args: any[]) => unknown): unknown
+  }
+}
+
+interface AgentsService {
+  list(): AgentLike[]
+}
+
 interface SkillInvocation {
   modelInvocable: boolean
   userInvocable: boolean
@@ -84,6 +130,10 @@ interface SkillSummary {
   resourceBase?: unknown
   path?: string
 }
+interface SkillCandidate extends SkillSummary {
+  rank: number
+  locator: unknown
+}
 interface SkillDefinition extends SkillSummary {
   content: string
   metadata?: unknown
@@ -92,1040 +142,1400 @@ interface SkillProviderControl {
   signal: { aborted: boolean; addEventListener(type: string, fn: () => void, opts?: unknown): void }
   invalidate(): void
 }
+interface SkillProvider {
+  name: string
+  list(options?: unknown): Promise<SkillCandidate[] | { candidates: SkillCandidate[]; complete: boolean }>
+  get(candidate: SkillSummary, options?: unknown): Promise<SkillDefinition | undefined>
+}
 interface SkillService {
-  registerProvider(create: (control: SkillProviderControl) => {
-    name: string
-    list(options?: unknown): Promise<SkillSummary[] | { candidates: SkillSummary[]; complete: boolean }>
-    get(candidate: SkillSummary, options?: unknown): Promise<SkillDefinition | undefined>
-  }): unknown
+  registerProvider(create: (control: SkillProviderControl) => SkillProvider): () => void
   snapshot(options?: unknown): Promise<{ skills: SkillSummary[]; complete: boolean }>
   get(name: string, options?: unknown): Promise<SkillDefinition | undefined>
 }
 
-interface DshContext extends Context {
+interface DshContext {
   timer: unknown
   fs: FsService
-  settings: SettingsService
-  sandboxPolicy: SandboxPolicyService
-  webServer: WebServerService
-  skills: SkillService
+  tools: ToolsService
   timeout(delay: number): Promise<void>
+  get(name: string): unknown
+  inject(deps: string[], callback: (child: any) => unknown): unknown
+  effect(fn: () => unknown, label?: string): unknown
+  on(event: string, listener: (...args: any[]) => unknown, options?: unknown): unknown
 }
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+export const Config = z.object({
+  token: z.string().default('').description('Optional access token required by state-changing HTTP API operations (x-dsh-token).'),
+})
+
+export type ManagerConfig = { token?: string }
+
+export const name = 'dsh-mcp-manager'
+export const inject = ['timer', 'fs', 'tools']
+
+const MCP_NAME = '@deepseek-ai/dsh-mcp-client'
+const OVERRIDE_PROVIDER = 'dsh-mcp-manager-override'
+const AGENT_OVERRIDE_PROVIDER = 'dsh-mcp-manager-agent-override'
+const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const SERVER_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/
+const MAX_BODY = 1024 * 1024
+const MAX_TIMER_MS = 2_147_483_647
+
+type Layer = 'profile' | 'home'
 
 interface ManagedRow {
   id: string
   name?: string
-  serverName?: string
-  level?: 'project' | 'global'
-  disabled?: boolean
-  managed?: boolean
-  config: Record<string, unknown>
+  serverName: string
+  level: Layer | 'loader'
+  disabled: boolean
+  config: Record<string, any>
+  live?: { enabled: boolean; phase: string | null; entryId?: string; addressable: boolean; readOnlyReason?: string }
+  toolCount?: number
+  readOnly?: boolean
+  readOnlyReason?: 'home' | 'loader' | 'overridden-by-home' | string
 }
 
-export default {
-  name: 'dsh-mcp-manager-host',
-  inject: ['timer', 'fs', 'settings', 'sandboxPolicy', 'webServer', 'tools', 'skills'],
-  apply(ctx: DshContext, config?: Record<string, unknown>) {
-    const fs = ctx.fs
-    const settings = ctx.settings
-    const sandboxPolicy = ctx.sandboxPolicy
-    const webServer = ctx.webServer
-    const tools = ctx.tools
-    // pluginInventory is optional: probe at use time, degrade to no live info.
-    const pluginInventory = ctx.get('pluginInventory') as PluginInventoryService | undefined
+interface Paths {
+  home: string
+  profileDir: string
+  profileName: string
+  profilePatch: string
+  homePatch: string
+}
 
-    // Package version, surfaced in the Settings pages and the HTTP API. Read
-    // from the installed package.json so it always matches the release tag.
-    let PKG_VERSION = 'unknown'
+// ---------------------------------------------------------------------------
+// Package version (shown in both Settings pages and the API)
+// ---------------------------------------------------------------------------
+
+function packageVersion(): string {
+  try {
+    const req = createRequire(import.meta.url)
+    const pkg = req('../package.json') as { version?: string }
+    return pkg.version || 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+const message = (e: unknown) => String((e && (e as Error).message) || e)
+
+// The scope tag is a module-local symbol in @deepseek-ai/dsh-scope. Importing
+// that package from a plugin can resolve a second copy, whose symbol would not
+// match the contexts DSH minted. Read the tag from the context itself instead:
+// the scope key lives on an own `Symbol('dsh.scope')` property somewhere on the
+// context's prototype chain.
+function scopeKeyOf(ctx: unknown): object | undefined {
+  try {
+    let cursor = ctx as Record<PropertyKey, unknown> | null
+    for (let depth = 0; cursor && depth < 24; depth++) {
+      for (const key of Object.getOwnPropertySymbols(cursor)) {
+        if (key.description === 'dsh.scope') {
+          const value = cursor[key]
+          if (value && (typeof value === 'object' || typeof value === 'function')) return value as object
+        }
+      }
+      cursor = Object.getPrototypeOf(cursor) as Record<PropertyKey, unknown> | null
+    }
+  } catch {
+    /* a hostile or unusual context simply has no visible scope tag */
+  }
+  return undefined
+}
+
+// ---------------------------------------------------------------------------
+// YAML helpers — document-level editing preserves comments and !!js nodes.
+// ---------------------------------------------------------------------------
+
+type PatchDoc = ReturnType<typeof parseDocument>
+
+const JS_TAG = {
+  tag: 'tag:yaml.org,2002:js',
+  resolve: (value: string) => value,
+}
+
+function loadDoc(text: string): PatchDoc {
+  const doc = parseDocument(text && text.trim() ? text : '[]\n', { customTags: [JS_TAG] })
+  if (doc.errors.length > 0) throw new Error('invalid YAML: ' + doc.errors[0].message)
+  if (doc.contents === null || doc.contents === undefined) {
+    doc.contents = doc.createNode([]) as any
+  }
+  if (!isSeq(doc.contents)) throw new Error('patch file must be a top-level YAML array')
+  // New `createNode` values inside an existing flow sequence would be emitted as
+  // flow collections; keep the human-readable block style the rest of a DSH
+  // patch file uses.
+  doc.contents.flow = false
+  return doc
+}
+
+function topItems(doc: PatchDoc): unknown[] {
+  return isSeq(doc.contents) ? doc.contents.items : []
+}
+
+function str(v: unknown): string {
+  if (v === null || v === undefined) return ''
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return ''
+}
+
+function toPlain(node: unknown): any {
+  if (node && typeof (node as { toJSON?: unknown }).toJSON === 'function') {
     try {
-      PKG_VERSION = (createRequire(import.meta.url)('../package.json') as { version?: string }).version || 'unknown'
-    } catch (e) { /* keep unknown */ }
-
-    // Optional access token (defense in depth for LAN exposure). Enabled by
-    // setting `config.token` on this plugin's loader row (profile
-    // cordis.patch.yml override) or the DSH_MCP_MANAGER_TOKEN env var. When
-    // set, every state-changing op requires `x-dsh-token: <token>`. Read-only
-    // ops (plugin-version, mcpm-list, skill-list) stay open so the UI still
-    // renders; mcpm-export is guarded too because it leaks full configs.
-    // NOTE: the entry config arrives as the SECOND apply argument (Cordis
-    // calls `callback(ctx, config)`) — never read it off `ctx.config`, which
-    // is not an injected service and throws "cannot get property without
-    // inject" at boot.
-    const TOKEN = String((config as { token?: unknown } | undefined)?.token || process.env.DSH_MCP_MANAGER_TOKEN || '').trim()
-    const WRITE_OPS = new Set([
-      'mcpm-add', 'mcpm-edit', 'mcpm-remove', 'mcpm-set-enabled', 'mcpm-restart',
-      'mcpm-export', 'mcpm-import', 'skill-toggle',
-    ])
-
-    const wait = (ms: number) => ctx.timeout(ms)
-    const message = (e: unknown) => String((e && (e as Error).message) || e)
-
-    let writeChain: Promise<void> = Promise.resolve()
-    function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
-      const run = writeChain.then(() => fn(), () => fn())
-      writeChain = run.then(() => undefined, () => undefined)
-      return run
+      return (node as { toJSON(): unknown }).toJSON()
+    } catch {
+      /* fall through */
     }
+  }
+  return node
+}
 
-    // ---------- skills management: list + enable/disable (rank-0 override provider) ----------
-    // A skill is disabled by advertising a same-name candidate with a rank lower
-    // than every real provider (project-dsh is 100; we use 0), so a user-explicit
-    // disable wins over any level — including project-level skills. State persists
-    // to <profile>/dsh-skill-manager.json and is re-applied lazily (providers may
-    // still be starting up when this plugin applies).
-    const OVERRIDE_PROVIDER = 'dsh-mcp-manager-override'
-    const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-    const overrideSkills = new Map<string, SkillDefinition>()
-    let skillProviderControl: SkillProviderControl | null = null
+function configOf(node: unknown): Record<string, any> {
+  const v = toPlain(node)
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : {}
+}
 
-    const statePath = async () => {
-      const p = await ensurePaths()
-      const s = p.profileDir.indexOf('\\') >= 0 ? '\\' : '/'
-      return p.profileDir + s + 'dsh-skill-manager.json'
-    }
-    async function readState(): Promise<string[]> {
-      try {
-        const raw = await fs.readText(await fs.resolve(await statePath()))
-        const data = JSON.parse(raw)
-        return Array.isArray(data.disabledSkills) ? data.disabledSkills.filter((n: unknown): n is string => typeof n === 'string') : []
-      } catch (e) {
-        return []
-      }
-    }
-    async function saveState(names: string[]): Promise<void> {
-      const policy = await sandboxPolicy.resolve({ mode: 'danger-full-access' })
-      await fs.writeText(await fs.resolve(await statePath()), JSON.stringify({ version: 1, disabledSkills: names }, null, 2), undefined, undefined, policy)
-    }
+interface RowSeed {
+  id: string
+  level: Layer
+  config: Record<string, any>
+  disabled: boolean
+}
 
-    const overrideProvider = {
-      name: OVERRIDE_PROVIDER,
-      async list() {
-        return [...overrideSkills.values()].map((d) => ({
-          name: d.name,
-          description: d.description,
-          ...(d.whenToUse !== undefined ? { whenToUse: d.whenToUse } : {}),
-          invocation: d.invocation,
-          source: d.source,
-          provider: OVERRIDE_PROVIDER,
-          rank: 0,
-          ...(d.path !== undefined ? { path: d.path } : {}),
-          locator: d.name,
-        }))
-      },
-      async get(candidate: SkillSummary) {
-        return overrideSkills.get(candidate.name)
-      },
-    }
-    try {
-      ctx.skills.registerProvider((control) => {
-        skillProviderControl = control
-        return overrideProvider
-      })
-    } catch (e) {
-      console.error('[dsh-mcp-manager] skills override provider registration failed:', message(e))
-    }
+interface OverrideSeed {
+  id: string
+  hasConfig: boolean
+  config: Record<string, any>
+  hasDisabled: boolean
+  disabled: boolean
+}
 
-    async function ensureRestored(): Promise<void> {
-      let changed = false
-      for (const name of await readState()) {
-        if (overrideSkills.has(name)) continue
-        // Pre-2.2.2 migration: user-level skills are view-only now. Drop any
-        // stale state entry without touching the file — the sandbox blocks
-        // writing ~/.dsh/skills from a profile plugin, and an override could
-        // never shadow the scoped-layer filesystem entry anyway.
-        const userDef = await findUserSkill(name)
-        if (userDef) {
-          changed = true
-          continue
-        }
-        const def = await ctx.skills.get(name)
-        if (!def) continue
-        overrideSkills.set(name, { ...def, provider: OVERRIDE_PROVIDER, invocation: { modelInvocable: false, userInvocable: false } })
-        changed = true
-      }
-      if (changed) {
-        await saveState([...overrideSkills.keys()])
-        if (skillProviderControl) skillProviderControl.invalidate()
-      }
-    }
-    ;(ctx.on as (event: string, callback: () => void) => unknown)('skills/change', () => { void ensureRestored() })
+function parsePatchText(text: string, level: Layer): { inserts: RowSeed[]; overrides: OverrideSeed[] } {
+  const doc = loadDoc(text)
+  const inserts: RowSeed[] = []
+  const overrides: OverrideSeed[] = []
 
-    // User-level skills (~/.dsh/skills/*/SKILL.md) are discovered by
-    // dsh-skill-filesystem in the agent-preset SCOPED layer, which a scope-less
-    // ctx.skills.snapshot({}) (global layer only) never reaches — so the
-    // management page would silently hide them. Scan the directory ourselves
-    // and merge into skill-list.
-    //
-    // Disable/enable is NOT offered for user skills: (a) a rank-0 override in
-    // the global layer cannot shadow the scoped layer's filesystem entry
-    // (collectFresh merges layers; the nearest layer wins); (b) writing the
-    // SKILL.md frontmatter is blocked by the fs sandbox (profile plugin,
-    // workspace-write mode — ~/.dsh/skills is outside its scope). Users
-    // disable such skills by editing `user-invocable: false` in the file
-    // directly. DSH_MCP_MANAGER_SKILLS_DIR overrides the directory for tests.
-    function userSkillsDir(home: string, sep: string): string {
-      const env = process.env.DSH_MCP_MANAGER_SKILLS_DIR
-      return env && env.trim() ? env.trim() : home + sep + 'skills'
-    }
-
-    // Minimal SKILL.md frontmatter reader that MIRRORS the official
-    // dsh-skill-filesystem parse rules (so this page never lists a skill the
-    // / menu would reject):
-    //   * `name` and `description` are REQUIRED (non-empty) — no dir-name fallback
-    //   * legacy camelCase keys (`userInvocable` / `modelInvocable`) are REJECTED
-    //   * booleans accept true/1/yes/on vs false/0/no/off (case-insensitive);
-    //     any other value invalidates the whole entry
-    // Returns null for anything the official provider would skip.
-    function parseFrontmatterBoolean(val: string): boolean | undefined {
-      const v = val.toLowerCase()
-      if (v === 'true' || v === '1' || v === 'yes' || v === 'on') return true
-      if (v === 'false' || v === '0' || v === 'no' || v === 'off') return false
-      return undefined
-    }
-    function parseSkillFile(raw: string): { fm: { name: string; description: string; whenToUse?: string; userInvocable?: boolean; disableModelInvocation?: boolean }; content: string } | null {
-      const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)
-      if (!m) return null
-      const fields = new Map<string, string>()
-      for (const line of m[1].split(/\r?\n/)) {
-        const kv = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(line.trim())
-        if (!kv) continue
-        fields.set(kv[1], kv[2].trim().replace(/^['"]|['"]$/g, ''))
-      }
-      if (fields.has('userInvocable') || fields.has('modelInvocable')) return null
-      const name = fields.get('name')
-      const description = fields.get('description')
-      if (!name || description === undefined || description === '') return null
-      const fm: { name: string; description: string; whenToUse?: string; userInvocable?: boolean; disableModelInvocation?: boolean } = { name, description }
-      const wtu = fields.get('whenToUse') ?? fields.get('when-to-use')
-      if (wtu) fm.whenToUse = wtu
-      const ui = fields.get('user-invocable')
-      if (ui !== undefined) {
-        const b = parseFrontmatterBoolean(ui)
-        if (b === undefined) return null
-        fm.userInvocable = b
-      }
-      const dmi = fields.get('disable-model-invocation')
-      if (dmi !== undefined) {
-        const b = parseFrontmatterBoolean(dmi)
-        if (b === undefined) return null
-        fm.disableModelInvocation = b
-      }
-      const content = raw.slice(m[0].length).replace(/^\r?\n+/, '')
-      return { fm, content }
-    }
-
-    async function scanUserSkills(): Promise<SkillDefinition[]> {
-      let dir: string
-      let sep: string
-      try {
-        const p = await ensurePaths()
-        sep = p.home.indexOf('\\') >= 0 ? '\\' : '/'
-        dir = userSkillsDir(p.home, sep)
-      } catch (e) { return [] }
-      let entries: Array<{ name: string }> = []
-      try { entries = await fs.listDir(await fs.resolve(dir)) } catch (e) { return [] }
-      const rows: SkillDefinition[] = []
-      const seen = new Set<string>()
-      for (const ent of entries) {
-        const nm = String(ent.name || '')
-        if (!nm || nm === '.system') continue
-        // Official parity (dsh-skill-filesystem discoverRoot): a directory entry
-        // points at `<dir>/SKILL.md`; a flat `*.md` file in the root is itself a
-        // skill. We cannot stat entry types through the fs service, so try the
-        // directory form first and fall back to the flat form for `.md` names.
-        let path = dir + sep + nm + sep + 'SKILL.md'
-        let directory = dir + sep + nm
-        let raw = ''
-        try { raw = await fs.readText(await fs.resolve(path)) } catch (e) {
-          if (!nm.endsWith('.md')) continue
-          path = dir + sep + nm
-          directory = dir
-          try { raw = await fs.readText(await fs.resolve(path)) } catch (e2) { continue }
-        }
-        const parsed = parseSkillFile(raw)
-        if (!parsed) {
-          console.warn(`[dsh-mcp-manager] user skill ${path} ignored: missing/invalid frontmatter (name+description required, kebab-case name, official boolean grammar)`)
-          continue
-        }
-        const { fm, content } = parsed
-        if (!SKILL_NAME_RE.test(fm.name)) continue
-        if (seen.has(fm.name)) continue
-        seen.add(fm.name)
-        rows.push({
-          name: fm.name,
-          description: fm.description,
-          ...(fm.whenToUse !== undefined ? { whenToUse: fm.whenToUse } : {}),
-          invocation: { modelInvocable: fm.disableModelInvocation !== true, userInvocable: fm.userInvocable !== false },
-          source: 'user-dsh',
-          provider: 'filesystem',
-          resourceBase: { kind: 'directory', path: directory },
-          path,
-          content,
+  for (const item of topItems(doc)) {
+    if (!isMap(item)) continue
+    const insert = item.get('insert')
+    if (isSeq(insert)) {
+      for (const child of insert.items) {
+        if (!isMap(child)) continue
+        if (str(child.get('name')) !== MCP_NAME) continue
+        const id = str(child.get('id'))
+        if (!id) continue
+        inserts.push({
+          id,
+          level,
+          config: configOf(child.get('config')),
+          disabled: child.get('disabled') === true,
         })
       }
-      return rows
+      continue
     }
+    const id = str(item.get('id'))
+    if (!id) continue
+    const declaredName = item.get('name')
+    if (declaredName !== undefined && declaredName !== null && str(declaredName) !== MCP_NAME) continue
+    overrides.push({
+      id,
+      config: configOf(item.get('config')),
+      hasConfig: isMap(item.get('config')),
+      disabled: item.get('disabled') === true,
+      hasDisabled: item.has('disabled'),
+    })
+  }
+  return { inserts, overrides }
+}
 
-    async function findUserSkill(name: string): Promise<SkillDefinition | undefined> {
-      return (await scanUserSkills()).find((s) => s.name === name)
-    }
+function ensureInsertSeq(doc: PatchDoc): YAMLSeq {
+  for (const item of topItems(doc)) {
+    if (!isMap(item)) continue
+    const insert = item.get('insert')
+    if (isSeq(insert)) return insert
+  }
+  const row = doc.createNode({ insert: [] }) as YAMLMap
+  ;(doc.contents as YAMLSeq).items.push(row)
+  return row.get('insert') as YAMLSeq
+}
 
-    async function skillList() {
-      await ensureRestored()
-      const snap = await ctx.skills.snapshot({})
-      const seen = new Set(snap.skills.map((s) => s.name))
-      const extra = (await scanUserSkills()).filter((s) => !seen.has(s.name))
-      const skills = snap.skills.concat(extra).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-      return { ok: true, skills, complete: snap.complete !== false }
+function findInsertChild(doc: PatchDoc, id: string): YAMLMap | null {
+  for (const item of topItems(doc)) {
+    if (!isMap(item)) continue
+    const insert = item.get('insert')
+    if (!isSeq(insert)) continue
+    for (const child of insert.items) {
+      if (isMap(child) && str(child.get('id')) === id) return child
     }
-    // User-level skills (~/.dsh/skills) are VIEW-ONLY in this page. They are
-    // discovered by dsh-skill-filesystem in the agent-preset SCOPED layer; a
-    // scope-less snapshot({}) (global layer only) never sees them, so we scan
-    // the directory and merge rows into skill-list. Disable/enable is NOT
-    // supported for them: (a) the rank-0 override provider lives in the global
-    // layer and a scoped read merges the scope chain with the scoped entry
-    // winning the duplicate name outright (collectFresh last-wins), so an
-    // override cannot hide them from the / menu; (b) rewriting the SKILL.md
-    // frontmatter is blocked by the fs sandbox (profile plugin, workspace-write
-    // mode — ~/.dsh/skills is outside its scope). Users disable such skills by
-    // editing `user-invocable: false` in the file directly.
-    const USER_SKILL_VIEW_ONLY_ERROR = '用户级技能由 DSH 文件系统管理，仅支持查看；如需禁用请直接编辑 SKILL.md 的 user-invocable 字段'
-    async function skillToggle(args: { name?: string; enabled?: boolean }) {
-      const name = String(args.name || '').trim()
-      if (!name) return { ok: false, error: '技能名不能为空' }
-      if (!SKILL_NAME_RE.test(name)) return { ok: false, error: '技能名格式非法（需 kebab-case）' }
-      await ensureRestored()
-      const enabled = args.enabled !== false
-      return withWriteLock(async () => {
-        const userDef = await findUserSkill(name)
-        if (userDef) {
-          // Drop any stale override row created by older versions (pre-2.2.2
-          // migration) — it can never shadow the scoped entry anyway, and the
-          // toggle for user skills is not supported.
-          if (overrideSkills.delete(name)) {
-            await saveState([...overrideSkills.keys()])
-            skillProviderControl?.invalidate()
-          }
-          return { ok: false, error: USER_SKILL_VIEW_ONLY_ERROR }
-        }
-        if (enabled) {
-          if (overrideSkills.delete(name)) {
-            await saveState([...overrideSkills.keys()])
-            skillProviderControl?.invalidate()
-          }
-        } else {
-          if (!overrideSkills.has(name)) {
-            const def = await ctx.skills.get(name)
-            if (!def) return { ok: false, error: '技能不存在: ' + name }
-            overrideSkills.set(name, { ...def, provider: OVERRIDE_PROVIDER, invocation: { modelInvocable: false, userInvocable: false } })
-            await saveState([...overrideSkills.keys()])
-            skillProviderControl?.invalidate()
-          }
-        }
-        return { ok: true }
-      })
-    }
+  }
+  return null
+}
 
-    // ---------- path discovery ----------
-    // Known limitation: profile detection probes 'web' then 'headless' by
-    // presence of profiles/<name>/cordis.patch.yml, then falls back to any
-    // profile that has one, and finally to 'web'. A profile whose directory
-    // name matches none of these and has no patch file yet is not detected.
-    let cached: { home: string; profileDir: string; profileName: string; projectPatch: string; globalPatch: string } | null = null
-    async function ensurePaths() {
-      if (cached) return cached
-      let home: string | null = null
-      try {
-        const doc = await settings.prepareDocument()
-        if (typeof doc === 'string' && doc) {
-          const i = Math.max(doc.lastIndexOf('\\'), doc.lastIndexOf('/'))
-          home = i > 0 ? doc.slice(0, i) : doc
+function isBareOverride(item: unknown): item is YAMLMap {
+  return isMap(item) && !item.has('insert')
+}
+
+function clearDisabledOverrides(doc: PatchDoc, id: string): void {
+  const seq = doc.contents as YAMLSeq
+  seq.items = seq.items.filter((item) => {
+    if (!isBareOverride(item) || str(item.get('id')) !== id) return true
+    if (item.has('config')) {
+      if (item.has('disabled')) item.delete('disabled')
+      return true
+    }
+    return false
+  })
+}
+
+function appendDisabledOverride(doc: PatchDoc, id: string, disabled: boolean): void {
+  ;(doc.contents as YAMLSeq).items.push(doc.createNode({ id, name: MCP_NAME, disabled }))
+}
+
+function setDisabledInDoc(doc: PatchDoc, id: string, disabled: boolean): void {
+  clearDisabledOverrides(doc, id)
+  const child = findInsertChild(doc, id)
+  const insertDisabled = child ? child.get('disabled') === true : false
+  if (disabled) appendDisabledOverride(doc, id, true)
+  else if (insertDisabled) appendDisabledOverride(doc, id, false)
+}
+
+function upsertInDoc(doc: PatchDoc, id: string, config: Record<string, any>): void {
+  const seq = ensureInsertSeq(doc)
+  let child: YAMLMap | null = null
+  for (const item of seq.items) {
+    if (isMap(item) && str(item.get('id')) === id) {
+      child = item
+      break
+    }
+  }
+  if (child) {
+    child.set('name', MCP_NAME)
+    child.set('config', doc.createNode(config))
+  } else {
+    seq.items.push(doc.createNode({ id, name: MCP_NAME, config }))
+  }
+  // A profile-level config override wins over the insert row; keep it aligned.
+  for (const item of topItems(doc)) {
+    if (isBareOverride(item) && str(item.get('id')) === id && item.has('config')) {
+      item.set('config', doc.createNode(config))
+    }
+  }
+}
+
+function removeFromDoc(doc: PatchDoc, id: string): void {
+  const seq = doc.contents as YAMLSeq
+  for (let i = seq.items.length - 1; i >= 0; i--) {
+    const item = seq.items[i]
+    if (!isMap(item)) continue
+    const insert = item.get('insert')
+    if (isSeq(insert)) {
+      insert.items = insert.items.filter((child) => !(isMap(child) && str(child.get('id')) === id))
+      if (insert.items.length === 0) seq.items.splice(i, 1)
+      continue
+    }
+    if (str(item.get('id')) === id) seq.items.splice(i, 1)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MCP config normalization
+// ---------------------------------------------------------------------------
+
+function has(obj: Record<string, any>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key)
+}
+
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((v) => String(v))
+  const text = typeof value === 'string' ? value : value == null ? '' : String(value)
+  if (!text.trim()) return []
+  // Newlines are the unambiguous separator (paths may contain spaces); a
+  // single-line value keeps the historical space/comma-separated convenience.
+  const lines = /\r?\n/.test(text)
+    ? text.split(/\r?\n/).map((s) => s.trim().replace(/,$/, '')).filter(Boolean)
+    : text.split(/[\s,]+/).filter(Boolean)
+  return lines
+}
+
+function asStringMap(value: unknown): Record<string, string> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const out: Record<string, string> = {}
+    for (const key of Object.keys(value as Record<string, unknown>)) out[key] = String((value as Record<string, unknown>)[key])
+    return out
+  }
+  const out: Record<string, string> = {}
+  for (const line of String(value ?? '').split(/\r?\n/)) {
+    const t = line.trim()
+    if (!t || t.startsWith('#')) continue
+    const i = t.indexOf('=')
+    if (i <= 0) continue
+    out[t.slice(0, i).trim()] = t.slice(i + 1).trim()
+  }
+  return out
+}
+
+function optionalNumber(input: Record<string, any>, current: Record<string, any>, key: string, min: number, max: number): number | undefined {
+  const raw = has(input, key) ? input[key] : current[key]
+  if (raw === undefined || raw === null || raw === '') return undefined
+  const n = Number(raw)
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < min || n > max) {
+    throw new Error(`${key} must be an integer between ${min} and ${max}`)
+  }
+  return n
+}
+
+function optionalBoolean(input: Record<string, any>, current: Record<string, any>, key: string): boolean | undefined {
+  if (!has(input, key)) {
+    if (has(current, key)) return current[key] === true
+    return undefined
+  }
+  const raw = input[key]
+  if (typeof raw === 'boolean') return raw
+  const text = String(raw ?? '').trim().toLowerCase()
+  if (text === 'true' || text === '1' || text === 'yes' || text === 'on') return true
+  if (text === 'false' || text === '0' || text === 'no' || text === 'off') return false
+  throw new Error(`${key} must be a boolean`)
+}
+
+function normalizeMcpConfig(input: Record<string, any>, current: Record<string, any> = {}): Record<string, any> {
+  const serverName = String(has(input, 'serverName') ? input.serverName : current.serverName ?? '').trim()
+  if (!SERVER_NAME_RE.test(serverName)) throw new Error('serverName must be 1-32 characters of [A-Za-z0-9_-]')
+  const transport = (has(input, 'transport') ? input.transport : current.transport) === 'stdio' ? 'stdio' : 'streamable-http'
+
+  const config: Record<string, any> = { ...current }
+  for (const key of ['serverName', 'transport', 'command', 'args', 'env', 'cwd', 'url', 'headers', 'toolCallTimeoutMs', 'failOnStartupError', 'maxInstructionBytes', 'reconnect']) {
+    delete config[key]
+  }
+  config.serverName = serverName
+  config.transport = transport
+  if (transport === 'stdio') {
+    const command = String(has(input, 'command') ? input.command : current.command ?? '').trim()
+    if (!command) throw new Error('command is required for stdio')
+    config.command = command
+    const args = has(input, 'args') ? asStringArray(input.args) : asStringArray(current.args ?? [])
+    if (args.length > 0) config.args = args
+    const env = has(input, 'env') ? asStringMap(input.env) : asStringMap(current.env ?? {})
+    if (Object.keys(env).length > 0) config.env = env
+    const cwd = String(has(input, 'cwd') ? input.cwd : current.cwd ?? '').trim()
+    if (cwd) config.cwd = cwd
+  } else {
+    const url = String(has(input, 'url') ? input.url : current.url ?? '').trim()
+    if (!/^https?:\/\//i.test(url)) throw new Error('url must start with http:// or https://')
+    config.url = url
+    const headers = has(input, 'headers') ? asStringMap(input.headers) : asStringMap(current.headers ?? {})
+    if (Object.keys(headers).length > 0) config.headers = headers
+  }
+
+  const timeout = optionalNumber(input, current, 'toolCallTimeoutMs', 1, 24 * 60 * 60 * 1000)
+  if (timeout !== undefined && timeout !== 60_000) config.toolCallTimeoutMs = timeout
+  const failOnStartupError = optionalBoolean(input, current, 'failOnStartupError')
+  if (failOnStartupError === true) config.failOnStartupError = true
+  const maxInstructionBytes = optionalNumber(input, current, 'maxInstructionBytes', 1, 4 * 1024 * 1024)
+  if (maxInstructionBytes !== undefined && maxInstructionBytes !== 32_768) config.maxInstructionBytes = maxInstructionBytes
+
+  const currentReconnect = current.reconnect && typeof current.reconnect === 'object' ? current.reconnect : {}
+  const inputReconnect = input.reconnect && typeof input.reconnect === 'object' ? input.reconnect : {}
+  const reconnect: Record<string, any> = {}
+  const enabled = optionalBoolean(inputReconnect, currentReconnect, 'enabled')
+  if (enabled !== undefined && enabled !== true) reconnect.enabled = enabled
+  const initialDelayMs = optionalNumber(inputReconnect, currentReconnect, 'initialDelayMs', 1, MAX_TIMER_MS)
+  if (initialDelayMs !== undefined && initialDelayMs !== 500) reconnect.initialDelayMs = initialDelayMs
+  const maxDelayMs = optionalNumber(inputReconnect, currentReconnect, 'maxDelayMs', 1, MAX_TIMER_MS)
+  if (maxDelayMs !== undefined && maxDelayMs !== 30_000) reconnect.maxDelayMs = maxDelayMs
+  const maxAttempts = optionalNumber(inputReconnect, currentReconnect, 'maxAttempts', 1, 1_000_000)
+  if (maxAttempts !== undefined && maxAttempts !== 10) reconnect.maxAttempts = maxAttempts
+  if (Object.keys(reconnect).length > 0) config.reconnect = reconnect
+
+  // Flat model-tool inputs (`reconnectEnabled`, etc.) are accepted too.
+  const flatEnabled = optionalBoolean(input, {}, 'reconnectEnabled')
+  if (flatEnabled !== undefined && flatEnabled !== true) config.reconnect = { ...(config.reconnect || {}), enabled: flatEnabled }
+  const flatInitial = optionalNumber(input, {}, 'reconnectInitialDelayMs', 1, MAX_TIMER_MS)
+  if (flatInitial !== undefined && flatInitial !== 500) config.reconnect = { ...(config.reconnect || {}), initialDelayMs: flatInitial }
+  const flatMax = optionalNumber(input, {}, 'reconnectMaxDelayMs', 1, MAX_TIMER_MS)
+  if (flatMax !== undefined && flatMax !== 30_000) config.reconnect = { ...(config.reconnect || {}), maxDelayMs: flatMax }
+  const flatAttempts = optionalNumber(input, {}, 'reconnectMaxAttempts', 1, 1_000_000)
+  if (flatAttempts !== undefined && flatAttempts !== 10) config.reconnect = { ...(config.reconnect || {}), maxAttempts: flatAttempts }
+
+  return config
+}
+
+// ---------------------------------------------------------------------------
+// Skill frontmatter (mirrors dsh-skill-filesystem's accepted shape)
+// ---------------------------------------------------------------------------
+
+function parseFrontmatterBoolean(val: string): boolean | undefined {
+  const v = val.toLowerCase()
+  if (v === 'true' || v === '1' || v === 'yes' || v === 'on') return true
+  if (v === 'false' || v === '0' || v === 'no' || v === 'off') return false
+  return undefined
+}
+
+interface ParsedSkillFile {
+  fm: { name: string; description: string; whenToUse?: string; userInvocable?: boolean; disableModelInvocation?: boolean }
+  content: string
+}
+
+function parseSkillFile(raw: string): ParsedSkillFile | null {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)
+  if (!m) return null
+  const fields = new Map<string, string>()
+  for (const line of m[1].split(/\r?\n/)) {
+    const kv = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(line.trim())
+    if (!kv) continue
+    fields.set(kv[1], kv[2].trim().replace(/^['"]|['"]$/g, ''))
+  }
+  if (fields.has('userInvocable') || fields.has('modelInvocable')) return null
+  const name = fields.get('name')
+  const description = fields.get('description')
+  if (!name || description === undefined || description === '') return null
+  const fm: ParsedSkillFile['fm'] = { name, description }
+  const wtu = fields.get('whenToUse') ?? fields.get('when-to-use')
+  if (wtu) fm.whenToUse = wtu
+  const ui = fields.get('user-invocable')
+  if (ui !== undefined) {
+    const b = parseFrontmatterBoolean(ui)
+    if (b === undefined) return null
+    fm.userInvocable = b
+  }
+  const dmi = fields.get('disable-model-invocation')
+  if (dmi !== undefined) {
+    const b = parseFrontmatterBoolean(dmi)
+    if (b === undefined) return null
+    fm.disableModelInvocation = b
+  }
+  return { fm, content: raw.slice(m[0].length).replace(/^\r?\n+/, '') }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin
+// ---------------------------------------------------------------------------
+
+export function apply(ctx: DshContext, config?: ManagerConfig): void {
+  const fs = ctx.fs
+  const tools = ctx.tools
+  const pkgVersion = packageVersion()
+  const TOKEN = String(config?.token || process.env.DSH_MCP_MANAGER_TOKEN || '').trim()
+  const WRITE_OPS = new Set([
+    'mcpm-add', 'mcpm-edit', 'mcpm-remove', 'mcpm-set-enabled', 'mcpm-restart',
+    'mcpm-export', 'mcpm-import', 'skill-toggle',
+  ])
+
+  const wait = (ms: number) => ctx.timeout(ms)
+  const optional = <T>(name: string): T | undefined => {
+    try {
+      return ctx.get(name) as T | undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  let writeChain: Promise<void> = Promise.resolve()
+  function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = writeChain.then(fn, fn)
+    writeChain = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  // ---------- paths ----------
+  let pathsCache: Paths | null = null
+  async function paths(): Promise<Paths> {
+    if (pathsCache) return pathsCache
+    let home = String(process.env.DSH_HOME || '').trim() || ''
+    let profileDir = String(process.env.DSH_PROFILE_DIR || '').trim() || ''
+    let profileName = String(process.env.DSH_PROFILE || '').trim()
+    if (!profileDir) {
+      const settings = optional<SettingsService>('settings')
+      if (settings?.prepareDocument) {
+        try {
+          const doc = await settings.prepareDocument()
+          if (typeof doc === 'string' && doc) {
+            profileDir = dirname(doc)
+            profileName = profileName || basename(profileDir)
+            home = home || dirname(dirname(profileDir))
+          }
+        } catch {
+          /* fall through to the scan */
         }
-      } catch (e) { /* ignore */ }
-      if (!home) throw new Error('无法确定 DSH 主目录（settings.prepareDocument 未返回路径）')
-      const sep = home.indexOf('\\') >= 0 ? '\\' : '/'
-      let profileDir: string | null = null
-      let profileName = 'web'
-      for (const name of ['web', 'headless']) {
-        if (await exists(home + sep + 'profiles' + sep + name + sep + 'cordis.patch.yml')) {
-          profileDir = home + sep + 'profiles' + sep + name
-          profileName = name
+      }
+    }
+    if (!home) home = join(homedir(), '.dsh')
+    if (!profileDir) {
+      const candidates = ['desktop', 'web', 'headless']
+      if (profileName && !candidates.includes(profileName)) candidates.unshift(profileName)
+      for (const candidate of candidates) {
+        const dir = join(home, 'profiles', candidate)
+        if (await exists(join(dir, 'cordis.patch.yml'))) {
+          profileDir = dir
+          profileName = candidate
           break
         }
       }
-      if (!profileDir) {
+    }
+    if (!profileDir) {
+      profileName = profileName || 'web'
+      profileDir = join(home, 'profiles', profileName)
+    }
+    pathsCache = {
+      home,
+      profileDir,
+      profileName,
+      profilePatch: join(profileDir, 'cordis.patch.yml'),
+      homePatch: join(home, 'cordis.patch.yml'),
+    }
+    return pathsCache
+  }
+
+  async function exists(abs: string): Promise<boolean> {
+    try {
+      return (await fs.stat(await fs.resolve(abs))) !== undefined
+    } catch {
+      return false
+    }
+  }
+
+  async function readPatch(abs: string): Promise<string> {
+    try {
+      return await fs.readText(await fs.resolve(abs))
+    } catch (e) {
+      if (String((e as { code?: string }).code) === 'FS_NOT_FOUND') return ''
+      throw e
+    }
+  }
+
+  async function writePatch(abs: string, content: string): Promise<void> {
+    const policy = optional<SandboxPolicyService>('sandboxPolicy')
+    const resolved = policy ? await policy.resolve({ mode: 'danger-full-access' }) : undefined
+    await fs.writeText(await fs.resolve(abs), content, undefined, undefined, resolved)
+  }
+
+  async function profilePatch(): Promise<string> {
+    return (await paths()).profilePatch
+  }
+
+  // ---------- skill state ----------
+  const overrideSkills = new Map<string, SkillDefinition>()
+  let skills: SkillService | null = null
+  let agents: AgentsService | null = null
+  let skillStateLoaded = false
+  let userSkillCache: { at: number; rows: SkillDefinition[] } | null = null
+
+  async function skillStatePath(): Promise<string> {
+    return join((await paths()).profileDir, 'dsh-skill-manager.json')
+  }
+
+  async function readDisabledNames(): Promise<string[]> {
+    try {
+      const raw = await fs.readText(await fs.resolve(await skillStatePath()))
+      const data = JSON.parse(raw)
+      return Array.isArray(data.disabledSkills)
+        ? data.disabledSkills.filter((n: unknown): n is string => typeof n === 'string' && SKILL_NAME_RE.test(n))
+        : []
+    } catch {
+      return []
+    }
+  }
+
+  async function writeDisabledNames(names: string[]): Promise<void> {
+    const policy = optional<SandboxPolicyService>('sandboxPolicy')
+    const resolved = policy ? await policy.resolve({ mode: 'danger-full-access' }) : undefined
+    await fs.writeText(
+      await fs.resolve(await skillStatePath()),
+      JSON.stringify({ version: 1, disabledSkills: [...new Set(names)].sort() }, null, 2),
+      undefined,
+      undefined,
+      resolved,
+    )
+  }
+
+  let disabledNames = new Set<string>()
+
+  async function saveSkillState(): Promise<void> {
+    const names = new Set(disabledNames)
+    for (const name of overrideSkills.keys()) names.add(name)
+    disabledNames = names
+    await writeDisabledNames([...disabledNames])
+  }
+
+  function makeOverrideProvider(providerName: string): SkillProvider {
+    return {
+      name: providerName,
+      async list() {
+        const candidates: SkillCandidate[] = []
+        for (const def of overrideSkills.values()) {
+          candidates.push({
+            name: def.name,
+            description: def.description,
+            ...(def.whenToUse !== undefined ? { whenToUse: def.whenToUse } : {}),
+            invocation: { modelInvocable: false, userInvocable: false },
+            source: def.source || 'custom',
+            provider: providerName,
+            ...(def.path !== undefined ? { path: def.path } : {}),
+            ...(def.resourceBase !== undefined ? { resourceBase: def.resourceBase } : {}),
+            rank: 0,
+            locator: def.name,
+          })
+        }
+        return candidates
+      },
+      async get(candidate: SkillSummary) {
+        const def = overrideSkills.get(candidate.name)
+        if (!def) return undefined
+        return {
+          ...def,
+          provider: providerName,
+          invocation: { modelInvocable: false, userInvocable: false },
+        }
+      },
+    }
+  }
+
+  interface AgentSkillView {
+    service: SkillService
+    scope?: object
+    invalidate: () => void
+    dispose: () => void
+  }
+  const agentViews = new Map<string, AgentSkillView>()
+  const agentInjects = new Map<string, { dispose?: () => unknown }>()
+  let globalProviderControl: SkillProviderControl | null = null
+
+  function invalidateProviders(): void {
+    try {
+      globalProviderControl?.invalidate?.()
+    } catch {
+      /* ignore */
+    }
+    for (const view of agentViews.values()) {
+      try {
+        view.invalidate()
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  function userSkillRoots(): Array<{ dir: string; source: string }> {
+    const roots: Array<{ dir: string; source: string }> = []
+    const overrideDir = String(process.env.DSH_MCP_MANAGER_SKILLS_DIR || '').trim()
+    if (overrideDir) {
+      roots.push({ dir: overrideDir, source: 'user-dsh' })
+      return roots
+    }
+    const dshHome = String(process.env.DSH_HOME || '').trim() || join(homedir(), '.dsh')
+    roots.push({ dir: join(dshHome, 'skills'), source: 'user-dsh' })
+    const agentsHome = String(process.env.DSH_AGENTS_HOME || '').trim() || join(homedir(), '.agents')
+    roots.push({ dir: join(agentsHome, 'skills'), source: 'user-agents' })
+    return roots
+  }
+
+  async function scanSkillRoot(root: { dir: string; source: string }): Promise<SkillDefinition[]> {
+    let entries: Array<{ name: string }> = []
+    try {
+      entries = await fs.listDir(await fs.resolve(root.dir))
+    } catch {
+      return []
+    }
+    const rows: SkillDefinition[] = []
+    const seen = new Set<string>()
+    for (const ent of entries) {
+      const entryName = String(ent.name || '')
+      if (!entryName || entryName === '.system') continue
+      let path = join(root.dir, entryName, 'SKILL.md')
+      let directory = join(root.dir, entryName)
+      let raw = ''
+      try {
+        raw = await fs.readText(await fs.resolve(path))
+      } catch {
+        if (!entryName.endsWith('.md')) continue
+        path = join(root.dir, entryName)
+        directory = root.dir
         try {
-          const t = await fs.resolve(home + sep + 'profiles')
-          const entries = await fs.listDir(t)
-          for (const e of entries) {
-            if (e.name === 'node_modules') continue
-            if (await exists(home + sep + 'profiles' + sep + e.name + sep + 'cordis.patch.yml')) {
-              profileDir = home + sep + 'profiles' + sep + e.name
-              profileName = e.name
-              break
+          raw = await fs.readText(await fs.resolve(path))
+        } catch {
+          continue
+        }
+      }
+      const parsed = parseSkillFile(raw)
+      if (!parsed) continue
+      if (!SKILL_NAME_RE.test(parsed.fm.name) || seen.has(parsed.fm.name)) continue
+      seen.add(parsed.fm.name)
+      rows.push({
+        name: parsed.fm.name,
+        description: parsed.fm.description,
+        ...(parsed.fm.whenToUse !== undefined ? { whenToUse: parsed.fm.whenToUse } : {}),
+        invocation: {
+          modelInvocable: parsed.fm.disableModelInvocation !== true,
+          userInvocable: parsed.fm.userInvocable !== false,
+        },
+        source: root.source,
+        provider: 'filesystem',
+        resourceBase: { kind: 'directory', path: directory },
+        path,
+        content: parsed.content,
+      })
+    }
+    return rows
+  }
+
+  async function scanUserSkills(force = false): Promise<SkillDefinition[]> {
+    const now = Date.now()
+    if (!force && userSkillCache && now - userSkillCache.at < 2000) return userSkillCache.rows
+    const rows: SkillDefinition[] = []
+    const seen = new Set<string>()
+    for (const root of userSkillRoots()) {
+      for (const row of await scanSkillRoot(root)) {
+        if (seen.has(row.name)) continue
+        seen.add(row.name)
+        rows.push(row)
+      }
+    }
+    userSkillCache = { at: now, rows }
+    return rows
+  }
+
+  function agentSkillViews(): AgentSkillView[] {
+    return [...agentViews.values()]
+  }
+
+  async function lookupSkill(name: string): Promise<SkillDefinition | undefined> {
+    if (skills) {
+      try {
+        const def = await skills.get(name)
+        if (def) return def
+      } catch {
+        /* ignore one scope */
+      }
+    }
+    for (const view of agentSkillViews()) {
+      try {
+        const def = await view.service.get(name, view.scope ? { scope: view.scope } : {})
+        if (def) return def
+      } catch {
+        /* ignore one scope */
+      }
+    }
+    return (await scanUserSkills()).find((s) => s.name === name)
+  }
+
+  async function ensureRestored(force = false): Promise<void> {
+    if (!skillStateLoaded || force) {
+      const names = await readDisabledNames()
+      disabledNames = new Set(names)
+      skillStateLoaded = true
+    }
+    let changed = false
+    for (const name of disabledNames) {
+      if (overrideSkills.has(name)) continue
+      const def = await lookupSkill(name)
+      if (!def) continue
+      overrideSkills.set(name, {
+        ...def,
+        provider: OVERRIDE_PROVIDER,
+        invocation: { modelInvocable: false, userInvocable: false },
+      })
+      changed = true
+    }
+    // State entries whose skill disappeared are kept in the file (the skill can
+    // come back) but have no live override.
+    if (changed) await saveSkillState()
+  }
+
+  function restoreSkillStateQuietly(): void {
+    void ensureRestored(true).catch((e) => {
+      console.warn('[dsh-mcp-manager] skill state restore failed:', message(e))
+    })
+  }
+
+  function registerAgentOverrides(agent: AgentLike): void {
+    const id = String(agent?.id || '')
+    const agentCtx = agent?.ctx
+    if (!id || !agentCtx || agentViews.has(id)) return
+    let fiber: { dispose?: () => unknown } | undefined
+    let control: SkillProviderControl | null = null
+    try {
+      fiber = agentCtx.inject(['skills'], (child: any) => {
+        const service = child.get('skills') as SkillService | undefined
+        if (!service) return
+        const scope = scopeKeyOf(child)
+        const view: AgentSkillView = {
+          service,
+          ...(scope ? { scope } : {}),
+          invalidate: () => {
+            try {
+              control?.invalidate?.()
+            } catch {
+              /* ignore */
             }
-          }
-        } catch (e) { /* ignore */ }
-      }
-      if (!profileDir) profileDir = home + sep + 'profiles' + sep + 'web'
-      cached = {
-        home,
-        profileDir,
-        profileName,
-        projectPatch: profileDir + sep + 'cordis.patch.yml',
-        globalPatch: home + sep + 'cordis.patch.yml',
-      }
-      return cached
-    }
-
-    async function exists(abs: string): Promise<boolean> {
-      try {
-        const t = await fs.resolve(abs)
-        return (await fs.stat(t)) !== undefined
-      } catch (e) { return false }
-    }
-
-    async function readPatch(abs: string): Promise<string> {
-      try {
-        const t = await fs.resolve(abs)
-        return await fs.readText(t)
-      } catch (e) {
-        if (String((e as { code?: string }).code) === 'FS_NOT_FOUND') return ''
-        throw e
-      }
-    }
-
-    async function writePatch(abs: string, content: string): Promise<void> {
-      const t = await fs.resolve(abs)
-      const policy = await sandboxPolicy.resolve({ mode: 'danger-full-access' })
-      await fs.writeText(t, content, undefined, undefined, policy)
-    }
-
-    // ---------- YAML generation ----------
-    function yq(v: unknown): string { return typeof v === 'string' ? JSON.stringify(v) : String(v) }
-    function yplain(v: string): string { return /^[A-Za-z0-9_.:@%+=/-]+$/.test(v) ? v : yq(v) }
-
-    function buildInsertBlock(row: { id: string; serverName: string; transport: string; url?: string; command?: string; args?: string[]; env?: Record<string, string>; headers?: Record<string, string>; toolCallTimeoutMs?: number }): string {
-      const lines = [
-        '# dsh-mcp-manager:server:' + row.id,
-        '- insert:',
-        '    - id: ' + yplain(row.id),
-        "      name: '@deepseek-ai/dsh-mcp-client'",
-        '      config:',
-        '        serverName: ' + yq(row.serverName),
-        '        transport: ' + yq(row.transport),
-      ]
-      if (row.transport === 'streamable-http') {
-        lines.push('        url: ' + yq(row.url || ''))
-        const headers = row.headers || {}
-        const hk = Object.keys(headers)
-        if (hk.length) {
-          lines.push('        headers:')
-          for (const k of hk) lines.push('          ' + yq(k) + ': ' + yq(headers[k]))
-        }
-      } else {
-        lines.push('        command: ' + yq(row.command || ''))
-        const args = row.args || []
-        if (args.length) {
-          lines.push('        args:')
-          for (const a of args) lines.push('          - ' + yq(a))
-        }
-        const env = row.env || {}
-        const ek = Object.keys(env)
-        if (ek.length) {
-          lines.push('        env:')
-          for (const k of ek) lines.push('          ' + yq(k) + ': ' + yq(env[k]))
-        }
-      }
-      if (row.toolCallTimeoutMs) lines.push('        toolCallTimeoutMs: ' + Number(row.toolCallTimeoutMs))
-      return lines.join('\n')
-    }
-
-    function buildDisableBlock(id: string, disabled: boolean): string {
-      return [
-        '# dsh-mcp-manager:' + (disabled ? 'disable' : 'enable') + ':' + id,
-        '- id: ' + yplain(id),
-        "  name: '@deepseek-ai/dsh-mcp-client'",
-        '  disabled: ' + (disabled ? 'true' : 'false'),
-      ].join('\n')
-    }
-
-    // ---------- YAML parsing (mini parser) ----------
-    // Known limitation: this hand-rolled parser assumes the exact indentation
-    // style that buildInsertBlock emits (config at 6 spaces, children at 8,
-    // nested maps/lists at 10+). Hand-edited patch files using different
-    // indentation may parse incorrectly — DSH itself only cares about the
-    // effective YAML it reads, and this parser exists purely for the UI.
-    function splitKV(text: string): { key: string; value: string } | null {
-      const m = text.match(/^("(?:\\.|[^"])*"|'[^']*'|[^:]+?)\s*:\s*(.*)$/)
-      if (!m) return null
-      return { key: unquote(m[1]), value: m[2] }
-    }
-    function unquote(v: string): any {
-      if (v === undefined || v === null) return v
-      const s = String(v).trim()
-      if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) {
-        try { return JSON.parse(s) } catch (e) { return s.slice(1, -1) }
-      }
-      if (s.length >= 2 && s.startsWith("'") && s.endsWith("'")) return s.slice(1, -1).replace(/''/g, "'")
-      if (/^\[.*\]$/.test(s)) return s.slice(1, -1).split(',').map((x) => unquote(x.trim())).filter((x) => x !== '')
-      if (s === 'true') return true
-      if (s === 'false') return false
-      if (/^-?\d+$/.test(s)) return Number(s)
-      return s
-    }
-
-    function parseEntry(lines: string[]): { id?: string; name?: string; disabled?: boolean; config: Record<string, any> } {
-      const entry: { id?: string; name?: string; disabled?: boolean; config: Record<string, any> } = { config: {} }
-      let inConfig = false
-      let configIndent = 0
-      let nested: { key: string; indent: number; type: 'map' | 'list'; current: any } | null = null
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed || trimmed.startsWith('#')) continue
-        const indent = line.match(/^\s*/)![0].length
-        let t = trimmed
-        if (t.startsWith('- ')) t = t.slice(2).trim()
-        const kv = splitKV(t)
-        if (!kv) {
-          if (inConfig && nested && nested.type === 'list') nested.current.push(unquote(t))
-          continue
-        }
-        if (!inConfig) {
-          if (kv.key === 'config' && kv.value === '') { inConfig = true; configIndent = indent; continue }
-          if (kv.key === 'id') entry.id = unquote(kv.value)
-          else if (kv.key === 'name') entry.name = unquote(kv.value)
-          else if (kv.key === 'disabled') entry.disabled = kv.value === 'true'
-          continue
-        }
-        if (indent <= configIndent) { inConfig = false; nested = null; continue }
-        if (kv.value === '' && (kv.key === 'headers' || kv.key === 'env')) {
-          nested = { key: kv.key, indent, type: 'map', current: {} }
-          entry.config[kv.key] = nested.current
-          continue
-        }
-        if (kv.value === '' && kv.key === 'args') {
-          nested = { key: kv.key, indent, type: 'list', current: [] }
-          entry.config[kv.key] = nested.current
-          continue
-        }
-        if (nested && indent > nested.indent) {
-          if (nested.type === 'map') nested.current[kv.key] = unquote(kv.value)
-          else if (nested.type === 'list') nested.current.push(unquote(kv.value))
-          continue
-        }
-        nested = null
-        entry.config[kv.key] = unquote(kv.value)
-      }
-      return entry
-    }
-
-    function parseRows(content: string): { rows: ManagedRow[] } {
-      const lines = content.split(/\r?\n/)
-      const managedIds = new Set<string>()
-      for (const line of lines) {
-        const m = line.match(/^# dsh-mcp-manager:server:(.+)$/)
-        if (m) managedIds.add(m[1].trim())
-      }
-      const rows: ManagedRow[] = []
-      const overrides: Array<{ id: string; disabled?: boolean }> = []
-      const blocks: Array<{ text: string }> = []
-      let current: { text: string } | null = null
-      for (const line of lines) {
-        if (/^- /.test(line)) {
-          current = { text: line }
-          blocks.push(current)
-        } else if (current) {
-          current.text += '\n' + line
-        }
-      }
-      for (const block of blocks) {
-        const head = block.text.split('\n')[0]
-        if (/^- insert:/.test(head)) {
-          const parts = block.text.split('\n')
-          const children: Array<{ lines: string[] }> = []
-          let j = 0
-          while (j < parts.length) {
-            if (/^    - /.test(parts[j])) {
-              const child = { lines: [parts[j]] }
-              j++
-              while (j < parts.length && !/^    - /.test(parts[j])) { child.lines.push(parts[j]); j++ }
-              children.push(child)
-            } else j++
-          }
-          for (const child of children) {
-            const entry = parseEntry(child.lines)
-            if (entry && entry.name === '@deepseek-ai/dsh-mcp-client') {
-              rows.push({ id: entry.id!, name: entry.name, disabled: entry.disabled, config: entry.config, managed: managedIds.has(entry.id!) })
+          },
+          dispose: () => {
+            try {
+              fiber?.dispose?.()
+            } catch {
+              /* ignore */
             }
-          }
-        } else {
-          const entry = parseEntry(block.text.split('\n'))
-          if (entry && entry.name === '@deepseek-ai/dsh-mcp-client') overrides.push({ id: entry.id!, disabled: entry.disabled })
+            agentInjects.delete(id)
+            agentViews.delete(id)
+          },
         }
-      }
-      for (const o of overrides) {
-        const row = rows.find((r) => r.id === o.id)
-        if (row && o.disabled !== undefined) row.disabled = o.disabled
-      }
-      return { rows }
+        agentViews.set(id, view)
+        // Register the override in the agent's own scope, so preset/project/user
+        // skills are shadowed for that session (a global provider cannot do this).
+        child.effect(() => child.skills.registerProvider((c: SkillProviderControl) => {
+          control = c
+          return makeOverrideProvider(AGENT_OVERRIDE_PROVIDER)
+        }))
+      })
+      if (fiber) agentInjects.set(id, fiber)
+    } catch {
+      return
     }
-
-    // ---------- line-based block editing ----------
-    function splitLines(content: string): string[] { return content.split(/\r?\n/) }
-    function joinLines(lines: string[]): string {
-      let res = lines.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '').replace(/\n*$/, '\n')
-      if (!res.trim()) {
-        res = '[]\n'
-      } else if (!/^- /m.test(res) && !/^\[\]\s*$/m.test(res)) {
-        // A patch file must stay a top-level YAML array: after removing the last
-        // entry, emit [] so loadOptionalPatches never throws on a comments-only file.
-        res = res.replace(/\n*$/, '\n[]\n')
-      }
-      return res
+    // Drop the bookkeeping when the agent scope itself is disposed.
+    try {
+      agentCtx.effect(() => () => {
+        agentViews.delete(id)
+        agentInjects.delete(id)
+      })
+    } catch {
+      /* ignore */
     }
-    function escRe(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
+  }
 
-    function markerRanges(lines: string[], id: string, ops: string): Array<[number, number]> {
-      const n = lines.length
-      const re = new RegExp('^# dsh-mcp-manager:(' + ops + '):' + escRe(id) + '$')
-      const ranges: Array<[number, number]> = []
-      for (let i = 0; i < n; i++) {
-        if (!re.test(lines[i])) continue
-        let j = i + 1
-        while (j < n && !/^- /.test(lines[j])) j++
-        let end = j
-        if (j < n && /^- /.test(lines[j])) {
-          let k = j + 1
-          while (k < n && !/^- /.test(lines[k])) k++
-          end = k
-        }
-        ranges.push([i, end])
-      }
-      return ranges
-    }
+  // Optional services: every registration below follows the service lifetime.
+  ctx.inject(['skills'], (child: any) => {
+    const service = child.get('skills') as SkillService | undefined
+    if (!service) return
+    skills = service
+    child.on('skills/change', () => {
+      restoreSkillStateQuietly()
+    })
+    child.effect(() => child.skills.registerProvider((control: SkillProviderControl) => {
+      globalProviderControl = control
+      return makeOverrideProvider(OVERRIDE_PROVIDER)
+    }))
+    restoreSkillStateQuietly()
+  })
 
-    function insertBlockRange(lines: string[], id: string): [number, number] | null {
-      const n = lines.length
-      const entryRe = new RegExp('^\\s*- id: ' + escRe(id) + '\\s*$')
-      for (let i = 0; i < n; i++) {
-        if (!/^- insert:/.test(lines[i])) continue
-        let end = i + 1
-        while (end < n && !/^- /.test(lines[end])) end++
-        if (lines.slice(i, end).some((l) => entryRe.test(l))) return [i, end]
-      }
-      return null
-    }
+  ctx.inject(['agents'], (child: any) => {
+    const service = child.get('agents') as AgentsService | undefined
+    if (!service) return
+    agents = service
+    child.on('agent/created', (payload: { agent: AgentLike }) => registerAgentOverrides(payload.agent))
+    for (const agent of agents.list()) registerAgentOverrides(agent)
+  })
 
-    function bareOverrideRanges(lines: string[], id: string): Array<[number, number]> {
-      const n = lines.length
-      const re = new RegExp('^- id: ' + escRe(id) + '\\s*$')
-      const ranges: Array<[number, number]> = []
-      for (let i = 0; i < n; i++) {
-        if (!re.test(lines[i])) continue
-        let end = i + 1
-        while (end < n && !/^- /.test(lines[end])) end++
-        ranges.push([i, end])
-      }
-      return ranges
-    }
-
-    function spliceRanges(lines: string[], ranges: Array<[number, number]>): string {
-      const remove = new Set<number>()
-      for (const r of ranges) for (let i = r[0]; i < r[1]; i++) remove.add(i)
-      return joinLines(lines.filter((_, i) => !remove.has(i)))
-    }
-
-    function removeEntryAll(content: string, id: string): string {
-      const lines = splitLines(content)
-      const ranges = markerRanges(lines, id, 'server|disable|enable')
-      const ib = insertBlockRange(lines, id)
-      if (ib) ranges.push(ib)
-      ranges.push(...bareOverrideRanges(lines, id))
-      return spliceRanges(lines, ranges)
-    }
-
-    function removeMarked(content: string, id: string, op: string): string {
-      return spliceRanges(splitLines(content), markerRanges(splitLines(content), id, op))
-    }
-
-    function appendBlock(content: string, block: string): string {
-      let c = content
-      if (/^\[\]\s*$/m.test(c)) c = c.replace(/^\[\]\s*$/m, block + '\n')
-      else c = c.replace(/\s*$/, '\n' + block + '\n')
-      return c
-    }
-
-    // ---------- shared state ----------
-    async function collectAll(): Promise<{ ids: Set<string>; serverNames: Set<string>; rows: Array<{ id: string; serverName: string; level: string; disabled: boolean }> }> {
-      const p = await ensurePaths()
-      const ids = new Set<string>()
-      const serverNames = new Set<string>()
-      const rows: Array<{ id: string; serverName: string; level: string; disabled: boolean }> = []
-      for (const level of ['project', 'global']) {
-        const abs = level === 'project' ? p.projectPatch : p.globalPatch
-        let content = ''
-        try { content = await readPatch(abs) } catch (e) { continue }
-        const { rows: fileRows } = parseRows(content)
-        for (const r of fileRows) {
-          ids.add(r.id)
-          const sn = r.config && r.config.serverName ? String(r.config.serverName) : r.id
-          serverNames.add(sn)
-          rows.push({ id: r.id, serverName: sn, level, disabled: !!r.disabled })
-        }
-      }
-      return { ids, serverNames, rows }
-    }
-
-    const bareEntryId = (v: string) => { const s = String(v); const i = s.lastIndexOf(':'); return i >= 0 ? s.slice(i + 1) : s }
-
-    async function liveEntry(id: string): Promise<PluginInventoryEntry | null> {
-      if (!pluginInventory) return null
+  ctx.effect(() => () => {
+    for (const view of [...agentViews.values()]) view.dispose()
+    for (const fiber of agentInjects.values()) {
       try {
-        const res = await pluginInventory.list()
-        return res.entries.find((e) => e.moduleName === '@deepseek-ai/dsh-mcp-client' && bareEntryId(e.entryId) === id) || null
-      } catch (e) { return null }
-    }
-
-    async function waitFor(pred: () => Promise<boolean>, timeoutMs: number, stepMs: number): Promise<boolean> {
-      const start = Date.now()
-      for (;;) {
-        const v = await pred()
-        if (v) return true
-        if (Date.now() - start > timeoutMs) return false
-        await wait(stepMs)
+        fiber.dispose?.()
+      } catch {
+        /* ignore */
       }
     }
+    agentInjects.clear()
+    agentViews.clear()
+  })
 
-    async function entryExists(id: string, level: string): Promise<boolean> {
-      const p = await ensurePaths()
-      const abs = level === 'global' ? p.globalPatch : p.projectPatch
-      let content = ''
-      try { content = await readPatch(abs) } catch (e) { return false }
-      const { rows } = parseRows(content)
-      if (rows.some((r) => r.id === id)) return true
-      return (await liveEntry(id)) !== null
-    }
-
-    function normalizeRow(r: ManagedRow, level: string, abs: string) {
-      const cfg = r.config || {}
-      return {
-        id: r.id,
-        serverName: cfg.serverName || r.id,
-        transport: cfg.transport || null,
-        url: cfg.url || null,
-        command: cfg.command || null,
-        args: cfg.args || null,
-        env: cfg.env || null,
-        headers: cfg.headers || null,
-        level,
-        disabled: !!r.disabled,
-        managed: !!r.managed,
+  async function skillList() {
+    await ensureRestored(true)
+    const byName = new Map<string, SkillSummary>()
+    const merge = (row: SkillSummary) => {
+      const existing = byName.get(row.name)
+      if (!existing) {
+        byName.set(row.name, row)
+        return
       }
+      if (existing.provider === OVERRIDE_PROVIDER || existing.provider === AGENT_OVERRIDE_PROVIDER) byName.set(row.name, row)
     }
-
-    // ---------- import helpers ----------
-    function toStrMap(v: unknown): Record<string, string> {
-      if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
-      const out: Record<string, string> = {}
-      for (const k of Object.keys(v)) out[k] = String((v as Record<string, unknown>)[k])
-      return out
-    }
-    function normalizeImportItem(item: unknown): { ok: true; row: any } | { ok: false; error: string } {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) return { ok: false, error: '条目不是对象' }
-      const it = item as Record<string, unknown>
-      const serverName = String(it.serverName || '').trim()
-      if (!/^[A-Za-z0-9_-]{1,32}$/.test(serverName)) return { ok: false, error: 'serverName 非法: ' + String(it.serverName) }
-      const transport = it.transport === 'stdio' ? 'stdio' : 'streamable-http'
-      const level = it.level === 'global' ? 'global' : 'project'
-      const baseId = 'mcp-' + serverName.toLowerCase().replace(/[^a-z0-9-]/g, '-')
-      const rawId = String(it.id || '').trim()
-      const id = rawId && /^[A-Za-z0-9_.:@%+=/-]+$/.test(rawId) ? rawId : baseId
-      const row: any = { id, serverName, transport, level, disabled: !!it.disabled }
-      if (transport === 'streamable-http') {
-        const url = String(it.url || '').trim()
-        if (!/^https?:\/\//.test(url)) return { ok: false, error: serverName + ': url 非法' }
-        row.url = url
-        row.headers = toStrMap(it.headers)
-      } else {
-        const command = String(it.command || '').trim()
-        if (!command) return { ok: false, error: serverName + ': command 缺失' }
-        row.command = command
-        row.args = Array.isArray(it.args) ? it.args.map(String) : []
-        row.env = toStrMap(it.env)
-      }
-      return { ok: true, row }
-    }
-
-    // ---------- ops ----------
-    async function pluginVersion(): Promise<any> {
-      return { ok: true, version: PKG_VERSION }
-    }
-
-    // Tool preview for one MCP server: project the model-facing schemas down to
-    // a name + description + parameter-summary list. The registry prefixes every
-    // MCP tool with `mcp__<serverName>__`; we filter on that and strip the prefix
-    // for display. Only the direct `properties` of the parameters object are
-    // summarized — nested object/array children are omitted (one level is enough
-    // for a preview, keeps the dialog readable).
-    async function mcpmTools(args: any): Promise<any> {
-      const serverName = String(args && args.serverName || '').trim()
-      if (!serverName) return { ok: false, error: 'serverName 不能为空' }
-      const prefix = 'mcp__' + serverName + '__'
-      let schemas: any[] = []
+    if (skills) {
       try {
-        schemas = await tools.schemas()
-      } catch (e) {
-        return { ok: false, error: message(e) }
+        const snap = await skills.snapshot({})
+        for (const row of snap.skills) merge(row)
+      } catch {
+        /* ignore */
       }
-      const toolsList: any[] = []
-      for (const s of schemas) {
-        const fullName = String(s && s.name || '')
-        if (!fullName.startsWith(prefix)) continue
-        const params: any[] = []
-        const props = s.parameters && typeof s.parameters === 'object' ? s.parameters.properties : null
-        const requiredSet = new Set<string>()
-        if (s.parameters && Array.isArray(s.parameters.required)) {
-          for (const k of s.parameters.required) if (typeof k === 'string') requiredSet.add(k)
+    }
+    for (const view of agentSkillViews()) {
+      try {
+        const snap = await view.service.snapshot(view.scope ? { scope: view.scope } : {})
+        for (const row of snap.skills) merge(row)
+      } catch {
+        /* ignore one scope */
+      }
+    }
+    for (const row of await scanUserSkills(true)) merge(row)
+
+    const rows = [...byName.values()]
+      .map((row) => {
+        const userLevel = row.source === 'user-dsh' || row.source === 'user-agents'
+        const disabled = disabledNames.has(row.name) || row.provider === OVERRIDE_PROVIDER || row.provider === AGENT_OVERRIDE_PROVIDER
+        return {
+          name: row.name,
+          description: row.description,
+          ...(row.whenToUse !== undefined ? { whenToUse: row.whenToUse } : {}),
+          invocation: disabled ? { modelInvocable: false, userInvocable: false } : row.invocation,
+          source: row.source,
+          provider: disabled && row.provider !== AGENT_OVERRIDE_PROVIDER ? OVERRIDE_PROVIDER : row.provider,
+          ...(row.path !== undefined ? { path: row.path } : {}),
+          userLevel,
+          disabled,
         }
-        if (props && typeof props === 'object') {
-          for (const [key, spec] of Object.entries(props as Record<string, any>)) {
-            const ps = (spec && typeof spec === 'object') ? spec : {}
-            params.push({
-              key,
-              required: requiredSet.has(key),
-              type: typeof ps.type === 'string' ? ps.type : 'any',
-              ...(typeof ps.description === 'string' ? { description: ps.description } : {}),
-            })
-          }
-        }
-        toolsList.push({
-          name: fullName.slice(prefix.length),
-          description: typeof s.description === 'string' ? s.description : '',
-          parameters: params,
+      })
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    return { ok: true, skills: rows, complete: true, agents: agents?.list().length || 0 }
+  }
+
+  async function skillToggle(args: { name?: string; enabled?: boolean }) {
+    const name = String(args.name || '').trim()
+    if (!name) return { ok: false, error: 'skill name is required' }
+    if (typeof args.enabled !== 'boolean') return { ok: false, error: 'enabled must be a boolean' }
+    if (!SKILL_NAME_RE.test(name)) return { ok: false, error: 'skill name must be kebab-case' }
+    await ensureRestored(true)
+    const enabled = args.enabled
+    return withWriteLock(async () => {
+      if (enabled) {
+        overrideSkills.delete(name)
+        disabledNames.delete(name)
+        await saveSkillState()
+        invalidateProviders()
+        return { ok: true }
+      }
+      if (!overrideSkills.has(name)) {
+        const def = await lookupSkill(name)
+        if (!def) return { ok: false, error: 'skill not found: ' + name }
+        overrideSkills.set(name, {
+          ...def,
+          provider: OVERRIDE_PROVIDER,
+          invocation: { modelInvocable: false, userInvocable: false },
         })
       }
-      return { ok: true, tools: toolsList }
-    }
+      disabledNames.add(name)
+      await saveSkillState()
+      invalidateProviders()
+      return { ok: true }
+    })
+  }
 
-    async function mcpmList(): Promise<any> {
-      const p = await ensurePaths()
-      const rows: any[] = []
-      const errors: string[] = []
-      for (const level of ['project', 'global']) {
-        const abs = level === 'project' ? p.projectPatch : p.globalPatch
-        let content = ''
-        try { content = await readPatch(abs) } catch (e) { errors.push(level + ': ' + message(e)); continue }
-        const { rows: fileRows } = parseRows(content)
-        for (const r of fileRows) rows.push(normalizeRow(r, level, abs))
-      }
-      const toolCounts: Record<string, number> = {}
+  // ---------- MCP read/write ----------
+  async function collectRows(): Promise<{ rows: ManagedRow[]; errors: string[] }> {
+    const errors: string[] = []
+    const rows = new Map<string, ManagedRow>()
+    const overrides: Array<{ level: Layer; seed: OverrideSeed }> = []
+    const p = await paths()
+    for (const layer of [
+      { level: 'profile' as Layer, abs: p.profilePatch },
+      { level: 'home' as Layer, abs: p.homePatch },
+    ]) {
       try {
-        const schemas = await tools.schemas()
-        for (const s of schemas) {
-          const m = String(s && s.name || '').match(/^mcp__([A-Za-z0-9_-]+)__/)
-          if (m) toolCounts[m[1]] = (toolCounts[m[1]] || 0) + 1
+        const parsed = parsePatchText(await readPatch(layer.abs), layer.level)
+        for (const seed of parsed.inserts) {
+          rows.set(seed.id, {
+            id: seed.id,
+            name: MCP_NAME,
+            serverName: str(seed.config.serverName) || seed.id,
+            level: seed.level,
+            disabled: seed.disabled,
+            config: seed.config,
+            ...(seed.level === 'home' ? { readOnly: true, readOnlyReason: 'home' as const } : {}),
+          })
         }
-      } catch (e) { /* ignore */ }
-      let live: PluginInventoryEntry[] = []
-      if (pluginInventory) {
+        for (const seed of parsed.overrides) overrides.push({ level: layer.level, seed })
+      } catch (e) {
+        errors.push(`${layer.level}: ${message(e)}`)
+      }
+    }
+
+    // Patch layers apply in order (profile first, then the home patch). A home
+    // override can target a profile row, and since home outranks profile the
+    // row is effectively read-only for this manager.
+    const homeOverridden = new Set<string>()
+    for (const { level, seed } of overrides) {
+      if (level === 'home') homeOverridden.add(seed.id)
+      const row = rows.get(seed.id)
+      if (!row) continue
+      if (seed.hasConfig) row.config = seed.config
+      if (seed.hasDisabled) row.disabled = seed.disabled
+    }
+    for (const row of rows.values()) {
+      row.serverName = str(row.config.serverName) || row.id
+      if (row.level === 'profile' && homeOverridden.has(row.id)) {
+        row.readOnly = true
+        row.readOnlyReason = 'overridden-by-home'
+      }
+    }
+    return { rows: [...rows.values()], errors }
+  }
+
+  async function listLive(): Promise<PluginInventoryEntry[]> {
+    const manager = optional<PluginManagerService>('pluginManager')
+    if (!manager?.listPlugins) return []
+    try {
+      const entries = await manager.listPlugins()
+      return entries.filter((e) => e.moduleName === MCP_NAME)
+    } catch {
+      return []
+    }
+  }
+
+  function liveFor(entryId: string | undefined, live: PluginInventoryEntry[]): PluginInventoryEntry | undefined {
+    if (!entryId) return undefined
+    const tail = entryId.includes(':') ? entryId.slice(entryId.lastIndexOf(':') + 1) : entryId
+    return live.find((e) => e.patchId === entryId) || live.find((e) => e.patchId === tail) || live.find((e) => e.entryId === entryId) || live.find((e) => e.entryId.endsWith(':' + tail))
+  }
+
+  async function mcpmList() {
+    const p = await paths()
+    const collected = await collectRows()
+    const live = await listLive()
+    const toolCounts: Record<string, number> = {}
+    try {
+      for (const schema of tools.schemas()) {
+        const m = String(schema?.name || '').match(/^mcp__([A-Za-z0-9_-]+)__/)
+        if (m) toolCounts[m[1]] = (toolCounts[m[1]] || 0) + 1
+      }
+    } catch {
+      /* ignore */
+    }
+
+    const rows: ManagedRow[] = collected.rows.map((row) => {
+      const config = row.config
+      const entry = liveFor(row.id, live)
+      const serverName = str(config.serverName) || row.serverName || row.id
+      const entryReadOnly = row.level === 'profile' && entry?.patchId === undefined && entry?.readOnlyReason !== undefined
+      const readOnly = row.readOnly === true || entryReadOnly
+      return {
+        ...row,
+        config,
+        serverName,
+        toolCount: toolCounts[serverName] || 0,
+        live: entry
+          ? {
+              enabled: entry.enabled,
+              phase: entry.fiberPhase,
+              entryId: entry.entryId,
+              addressable: !!entry.patchId,
+              ...(entry.readOnlyReason ? { readOnlyReason: entry.readOnlyReason } : {}),
+            }
+          : undefined,
+        readOnly,
+        readOnlyReason: row.readOnlyReason || (entryReadOnly ? entry?.readOnlyReason : undefined),
+      }
+    })
+
+    // A row introduced by a bundle layer is live but not present in either
+    // writable patch. Show it read-only rather than letting the user "delete"
+    // something this plugin does not own.
+    for (const entry of live) {
+      const id = entry.patchId || (entry.entryId.includes(':') ? entry.entryId.slice(entry.entryId.lastIndexOf(':') + 1) : entry.entryId)
+      if (rows.some((r) => r.id === id)) continue
+      const config = { serverName: id }
+      rows.push({
+        id,
+        name: MCP_NAME,
+        serverName: str(config.serverName) || id,
+        level: 'loader',
+        disabled: !entry.enabled,
+        config,
+        toolCount: toolCounts[str(config.serverName) || id] || 0,
+        live: { enabled: entry.enabled, phase: entry.fiberPhase, entryId: entry.entryId, addressable: !!entry.patchId, ...(entry.readOnlyReason ? { readOnlyReason: entry.readOnlyReason } : {}) },
+        readOnly: true,
+        readOnlyReason: entry.readOnlyReason || 'loader',
+      })
+    }
+
+    return {
+      ok: true,
+      rows: rows.map((row) => ({
+        id: row.id,
+        serverName: row.serverName,
+        transport: row.config.transport || null,
+        url: row.config.url || null,
+        command: row.config.command || null,
+        args: row.config.args || null,
+        env: row.config.env || null,
+        headers: row.config.headers || null,
+        cwd: row.config.cwd || null,
+        toolCallTimeoutMs: row.config.toolCallTimeoutMs || null,
+        failOnStartupError: row.config.failOnStartupError === true,
+        maxInstructionBytes: row.config.maxInstructionBytes || null,
+        reconnect: row.config.reconnect || null,
+        level: row.level,
+        disabled: row.disabled,
+        live: row.live || null,
+        toolCount: row.toolCount || 0,
+        readOnly: !!row.readOnly,
+        ...(row.readOnlyReason ? { readOnlyReason: row.readOnlyReason } : {}),
+      })),
+      paths: {
+        profile: p.profilePatch,
+        home: p.homePatch,
+        homeExists: await exists(p.homePatch),
+        profileDir: p.profileDir,
+        profileName: p.profileName,
+      },
+      errors: collected.errors,
+    }
+  }
+
+  async function nextId(serverName: string, existing: ManagedRow[]): Promise<string> {
+    const base = 'mcp-' + serverName.toLowerCase().replace(/[^a-z0-9-]/g, '-')
+    const ids = new Set(existing.map((r) => r.id))
+    let id = base
+    let n = 2
+    while (ids.has(id)) id = base + '-' + n++
+    return id
+  }
+
+  async function mcpmAdd(args: Record<string, any>) {
+    const collected = await collectRows()
+    if (args.level === 'global' || args.level === 'home') {
+      return { ok: false, error: 'the home patch is read-only in this manager; MCP servers are added to the current profile' }
+    }
+    let config: Record<string, any>
+    try {
+      config = normalizeMcpConfig(args)
+    } catch (e) {
+      return { ok: false, error: message(e) }
+    }
+    const serverName = String(config.serverName)
+    const duplicate = collected.rows.find((r) => r.serverName === serverName)
+    if (duplicate) return { ok: false, error: `serverName "${serverName}" already exists` }
+    const id = await nextId(serverName, collected.rows)
+    return withWriteLock(async () => {
+      const abs = await profilePatch()
+      const before = await readPatch(abs)
+      const doc = loadDoc(before)
+      upsertInDoc(doc, id, config)
+      if (args.enabled === false) setDisabledInDoc(doc, id, true)
+      await writePatch(abs, String(doc))
+      return { ok: true, row: { id, serverName, level: 'profile', disabled: args.enabled === false } }
+    })
+  }
+
+  async function mcpmEdit(args: Record<string, any>) {
+    const id = String(args.id || '').trim()
+    if (!id) return { ok: false, error: 'id is required' }
+    if (args.level === 'global' || args.level === 'home') {
+      return { ok: false, error: 'the home patch is read-only in this manager' }
+    }
+    const collected = await collectRows()
+    const current = collected.rows.find((r) => r.id === id)
+    if (!current) return { ok: false, error: `row not found: ${id}` }
+    if (current.level !== 'profile' || current.readOnly) {
+      return { ok: false, error: current.readOnlyReason === 'overridden-by-home' ? 'this row is overridden by the home patch and cannot be edited here' : 'this server comes from another layer and cannot be edited here' }
+    }
+    let nextConfig: Record<string, any>
+    try {
+      nextConfig = normalizeMcpConfig(args, current.config)
+    } catch (e) {
+      return { ok: false, error: message(e) }
+    }
+    const serverName = String(nextConfig.serverName)
+    const duplicate = collected.rows.find((r) => r.id !== id && r.serverName === serverName)
+    if (duplicate) return { ok: false, error: `serverName "${serverName}" is already used by ${duplicate.id}` }
+
+    // Prefer the official config editor when the profile row is live.
+    const editor = optional<ConfigEditorService>('configEditor')
+    if (editor?.entries) {
+      try {
+        const entry = editor.entries().find((e) => String(e.options?.id) === id)
+        if (entry && entry.fiber) {
+          await withWriteLock(async () => {
+            await editor.edit(entry, () => nextConfig)
+          })
+          return { ok: true }
+        }
+      } catch (e) {
+        // Fall through to the file edit; the diagnostic explains an override
+        // by a home patch, which the file fallback also cannot change.
+        const warning = message(e)
+        const result = await editProfileFile(id, nextConfig)
+        return result.ok ? { ...result, warning } : result
+      }
+    }
+    return withWriteLock(() => editProfileFile(id, nextConfig))
+  }
+
+  async function editProfileFile(id: string, nextConfig: Record<string, any>): Promise<Record<string, any>> {
+    const abs = await profilePatch()
+    const before = await readPatch(abs)
+    const doc = loadDoc(before)
+    upsertInDoc(doc, id, nextConfig)
+    await writePatch(abs, String(doc))
+    return { ok: true }
+  }
+
+  async function liveEntryFor(id: string): Promise<PluginInventoryEntry | undefined> {
+    const live = await listLive()
+    return live.find((e) => e.patchId === id) || live.find((e) => e.entryId === id) || live.find((e) => e.entryId.endsWith(':' + id))
+  }
+
+  async function waitForLive(id: string, wantEnabled: boolean, timeoutMs: number): Promise<boolean> {
+    const started = Date.now()
+    for (;;) {
+      const entry = await liveEntryFor(id)
+      if (entry && entry.enabled === wantEnabled) return true
+      if (Date.now() - started > timeoutMs) return false
+      await wait(250)
+    }
+  }
+
+  async function mcpmSetEnabled(args: Record<string, any>) {
+    const id = String(args.id || '')
+    const enabled = args.enabled === true
+    if (!id) return { ok: false, error: 'id is required' }
+    if (typeof args.enabled !== 'boolean') return { ok: false, error: 'enabled must be a boolean' }
+    const collected = await collectRows()
+    const row = collected.rows.find((r) => r.id === id)
+    if (!row) return { ok: false, error: `row not found: ${id}` }
+    if (row.level !== 'profile' || row.readOnly) {
+      return { ok: false, error: row.readOnlyReason === 'overridden-by-home' ? 'this row is overridden by the home patch and cannot be changed here' : 'this server is not managed in the current profile' }
+    }
+
+    const manager = optional<PluginManagerService>('pluginManager')
+    const entry = await liveEntryFor(id)
+    if (manager?.setPluginEnabled && entry?.patchId) {
+      const result = await manager.setPluginEnabled(entry.entryId, enabled)
+      if (result.application === 'failed') return { ok: false, error: result.error?.diagnostic || 'plugin manager rejected the change' }
+      const applied = result.application === 'applied'
+      return {
+        ok: true,
+        ...(applied ? {} : { warning: result.application === 'overridden' ? 'a higher-priority layer overrides this row' : 'restart required for this change' }),
+      }
+    }
+
+    const abs = await profilePatch()
+    return withWriteLock(async () => {
+      const before = await readPatch(abs)
+      const doc = loadDoc(before)
+      setDisabledInDoc(doc, id, !enabled)
+      await writePatch(abs, String(doc))
+      return { ok: true }
+    })
+  }
+
+  async function mcpmRestart(args: Record<string, any>) {
+    const id = String(args.id || '')
+    if (!id) return { ok: false, error: 'id is required' }
+    const collected = await collectRows()
+    const row = collected.rows.find((r) => r.id === id)
+    if (!row) return { ok: false, error: `row not found: ${id}` }
+    if (row.level !== 'profile' || row.readOnly) {
+      return { ok: false, error: row.readOnlyReason === 'overridden-by-home' ? 'this row is overridden by the home patch and cannot be restarted here' : 'this server is not managed in the current profile' }
+    }
+
+    const manager = optional<PluginManagerService>('pluginManager')
+    const entry = await liveEntryFor(id)
+    if (manager?.setPluginEnabled && entry?.patchId) {
+      if (entry.enabled) {
+        const off = await manager.setPluginEnabled(entry.entryId, false)
+        if (off.application === 'failed') return { ok: false, error: off.error?.diagnostic || 'plugin manager rejected the restart' }
+        await waitForLive(id, false, 5000)
+      }
+      const result = await manager.setPluginEnabled(entry.entryId, true)
+      if (result.application === 'failed') return { ok: false, error: result.error?.diagnostic || 'plugin manager rejected the restart' }
+      const on = await waitForLive(id, true, 5000)
+      return on ? { ok: true } : { ok: true, warning: 'loader did not report the service as active within 5 seconds' }
+    }
+
+    const abs = await profilePatch()
+    const canWait = !!entry && typeof manager?.listPlugins === 'function'
+    return withWriteLock(async () => {
+      const before = await readPatch(abs)
+      let doc = loadDoc(before)
+      setDisabledInDoc(doc, id, true)
+      await writePatch(abs, String(doc))
+      const warnings: string[] = []
+      const off = canWait ? await waitForLive(id, false, 4000) : true
+      if (!off) warnings.push('loader did not report the service as stopped within 4 seconds')
+      await wait(600)
+      try {
+        doc = loadDoc(await readPatch(abs))
+        setDisabledInDoc(doc, id, false)
+        await writePatch(abs, String(doc))
+      } catch (e) {
         try {
-          const res = await pluginInventory.list()
-          live = res.entries.filter((e) => e.moduleName === '@deepseek-ai/dsh-mcp-client')
-        } catch (e) { /* ignore */ }
-      }
-      for (const e of live) {
-        const bid = bareEntryId(e.entryId)
-        const found = rows.find((r) => r.id === bid)
-        if (found) found.live = { enabled: e.enabled, phase: e.fiberPhase }
-        else rows.push({ id: e.entryId, serverName: e.entryId, transport: null, url: null, command: null, args: null, env: null, headers: null, level: 'loader', disabled: !e.enabled, managed: false, live: { enabled: e.enabled, phase: e.fiberPhase } })
-      }
-      for (const row of rows) {
-        if (row.toolCount === undefined) row.toolCount = toolCounts[row.serverName] || 0
-      }
-      return { ok: true, rows, paths: { project: p.projectPatch, global: p.globalPatch, home: p.home, profile: p.profileName }, errors }
-    }
-
-    async function mcpmAdd(args: any): Promise<any> {
-      const p = await ensurePaths()
-      const serverName = String(args.serverName || '').trim()
-      const transport = args.transport === 'stdio' ? 'stdio' : 'streamable-http'
-      const level = args.level === 'global' ? 'global' : 'project'
-      if (!/^[A-Za-z0-9_-]{1,32}$/.test(serverName)) return { ok: false, error: 'serverName 需为 1-32 位 [A-Za-z0-9_-]' }
-      const baseId = 'mcp-' + serverName.toLowerCase().replace(/[^a-z0-9-]/g, '-')
-      const existing = await collectAll()
-      if (existing.serverNames.has(serverName)) return { ok: false, error: 'serverName "' + serverName + '" 已存在' }
-      let id = baseId
-      let n = 2
-      while (existing.ids.has(id)) { id = baseId + '-' + n; n++ }
-      const row: any = { id, serverName, transport }
-      if (transport === 'streamable-http') {
-        const url = String(args.url || '').trim()
-        if (!/^https?:\/\//.test(url)) return { ok: false, error: 'url 需为 http(s):// 开头的地址' }
-        row.url = url
-        row.headers = parseKv(args.headers)
-      } else {
-        const command = String(args.command || '').trim()
-        if (!command) return { ok: false, error: 'command 不能为空' }
-        row.command = command
-        row.args = parseArgs(args.args)
-        row.env = parseKv(args.env)
-      }
-      const abs = level === 'global' ? p.globalPatch : p.projectPatch
-      return withWriteLock(async () => {
-        let content = ''
-        try { content = await readPatch(abs) } catch (e) { return { ok: false, error: '读取补丁失败: ' + message(e) } }
-        content = appendBlock(content, buildInsertBlock(row))
-        if (args.enabled === false) content = appendBlock(content, buildDisableBlock(id, true))
-        try {
-          await writePatch(abs, content)
-        } catch (e) {
-          return { ok: false, error: '写入补丁失败: ' + message(e) }
+          await writePatch(abs, before)
+        } catch {
+          /* best effort */
         }
-        return { ok: true, row: { ...row, level, disabled: args.enabled === false } }
-      })
-    }
-
-    async function mcpmEdit(args: any): Promise<any> {
-      const p = await ensurePaths()
-      const id = String(args.id || '')
-      const level = args.level === 'global' ? 'global' : 'project'
-      if (!id) return { ok: false, error: '缺少 id' }
-      const all = await collectAll()
-      const cur = all.rows.find((r) => r.id === id)
-      if (!cur) return { ok: false, error: '未找到条目 ' + id }
-      const serverName = String(args.serverName || '').trim()
-      const transport = args.transport === 'stdio' ? 'stdio' : 'streamable-http'
-      if (!/^[A-Za-z0-9_-]{1,32}$/.test(serverName)) return { ok: false, error: 'serverName 需为 1-32 位 [A-Za-z0-9_-]' }
-      if (serverName !== cur.serverName && all.serverNames.has(serverName)) return { ok: false, error: 'serverName "' + serverName + '" 已被其他服务占用' }
-      const row: any = { id, serverName, transport }
-      if (transport === 'streamable-http') {
-        const url = String(args.url || '').trim()
-        if (!/^https?:\/\//.test(url)) return { ok: false, error: 'url 需为 http(s):// 开头的地址' }
-        row.url = url
-        row.headers = parseKv(args.headers)
-      } else {
-        const command = String(args.command || '').trim()
-        if (!command) return { ok: false, error: 'command 不能为空' }
-        row.command = command
-        row.args = parseArgs(args.args)
-        row.env = parseKv(args.env)
+        return { ok: false, error: 'restart failed: ' + message(e) }
       }
-      const oldAbs = cur.level === 'global' ? p.globalPatch : p.projectPatch
-      const newAbs = level === 'global' ? p.globalPatch : p.projectPatch
-      const block = buildInsertBlock(row)
-      return withWriteLock(async () => {
-        if (oldAbs !== newAbs) {
-          // Level migration: remove from the old file, insert into the new one.
-          // Not atomic, so keep the old content and restore it if the second
-          // write fails — losing the entry is worse than a transient dup.
-          const origOld = await readPatch(oldAbs)
-          let c = origOld
-          c = removeEntryAll(c, id)
-          try {
-            await writePatch(oldAbs, c)
-          } catch (e) {
-            return { ok: false, error: '写入失败: ' + message(e) }
-          }
-          let c2 = await readPatch(newAbs)
-          c2 = appendBlock(c2, block)
-          if (cur.disabled) c2 = appendBlock(c2, buildDisableBlock(id, true))
-          try {
-            await writePatch(newAbs, c2)
-          } catch (e) {
-            try { await writePatch(oldAbs, origOld) } catch (e2) { /* best effort */ }
-            return { ok: false, error: '写入失败（已回滚）: ' + message(e) }
-          }
-        } else {
-          let c = await readPatch(newAbs)
-          c = removeEntryAll(c, id)
-          c = appendBlock(c, block)
-          if (cur.disabled) c = appendBlock(c, buildDisableBlock(id, true))
-          await writePatch(newAbs, c)
+      const on = canWait ? await waitForLive(id, true, 4000) : true
+      if (!on) warnings.push('loader did not report the service as active within 4 seconds')
+      return warnings.length > 0 ? { ok: true, warning: warnings.join('; ') } : { ok: true }
+    })
+  }
+
+  async function mcpmRemove(args: Record<string, any>) {
+    const id = String(args.id || '')
+    if (!id) return { ok: false, error: 'id is required' }
+    const collected = await collectRows()
+    const row = collected.rows.find((r) => r.id === id)
+    if (!row) return { ok: false, error: `row not found: ${id}` }
+    if (row.level !== 'profile' || row.readOnly) {
+      return { ok: false, error: row.readOnlyReason === 'overridden-by-home' ? 'this row is overridden by the home patch and cannot be removed here' : 'this server is not managed in the current profile' }
+    }
+    const abs = await profilePatch()
+    return withWriteLock(async () => {
+      const before = await readPatch(abs)
+      const doc = loadDoc(before)
+      removeFromDoc(doc, id)
+      await writePatch(abs, String(doc))
+      return { ok: true }
+    })
+  }
+
+  async function mcpmTools(args: Record<string, any>) {
+    const serverName = String(args.serverName || '').trim()
+    if (!serverName) return { ok: false, error: 'serverName is required' }
+    const prefix = 'mcp__' + serverName + '__'
+    let schemas: Array<{ name: string; description?: string; parameters?: unknown }> = []
+    try {
+      schemas = tools.schemas()
+    } catch (e) {
+      return { ok: false, error: message(e) }
+    }
+    const list: any[] = []
+    for (const schema of schemas) {
+      const fullName = String(schema?.name || '')
+      if (!fullName.startsWith(prefix)) continue
+      const params: any[] = []
+      const properties = schema.parameters && typeof schema.parameters === 'object'
+        ? (schema.parameters as { properties?: Record<string, any>; required?: unknown }).properties
+        : undefined
+      const required = schema.parameters && typeof schema.parameters === 'object' && Array.isArray((schema.parameters as { required?: unknown }).required)
+        ? new Set(((schema.parameters as { required: unknown[] }).required).filter((v): v is string => typeof v === 'string'))
+        : new Set<string>()
+      if (properties && typeof properties === 'object') {
+        for (const [key, spec] of Object.entries(properties)) {
+          const ps = spec && typeof spec === 'object' ? spec as Record<string, any> : {}
+          params.push({
+            key,
+            required: required.has(key),
+            type: typeof ps.type === 'string' ? ps.type : 'any',
+            ...(typeof ps.description === 'string' ? { description: ps.description } : {}),
+          })
         }
-        return { ok: true }
+      }
+      list.push({
+        name: fullName.slice(prefix.length),
+        description: typeof schema.description === 'string' ? schema.description : '',
+        parameters: params,
       })
     }
+    return { ok: true, tools: list }
+  }
 
-    async function mcpmSetEnabled(args: any): Promise<any> {
-      const p = await ensurePaths()
-      const { id, level } = args
-      const enabled = !!args.enabled
-      if (!id || (level !== 'global' && level !== 'project')) return { ok: false, error: '缺少 id 或 level' }
-      if (!(await entryExists(id, level))) return { ok: false, error: '未找到条目 ' + id }
-      const abs = level === 'global' ? p.globalPatch : p.projectPatch
-      return withWriteLock(async () => {
-        let c = await readPatch(abs)
-        if (enabled) {
-          // Drop every `disabled: true` override for this id. If the insert row
-          // itself still says disabled (e.g. user hand-edited it), append an
-          // explicit `disabled: false` override so the effective state flips.
-          // Enable overrides are intentionally left in place — they are the
-          // mechanism that lets a disabled-by-default row be turned on.
-          c = removeMarked(c, id, 'disable')
-          const { rows } = parseRows(c)
-          const row = rows.find((r) => r.id === id)
-          if (row && row.disabled) c = appendBlock(c, buildDisableBlock(id, false))
-        } else {
-          c = removeMarked(c, id, 'enable')
-          c = appendBlock(c, buildDisableBlock(id, true))
-        }
-        await writePatch(abs, c)
-        return { ok: true }
-      })
-    }
-
-    async function mcpmRestart(args: any): Promise<any> {
-      const p = await ensurePaths()
-      const { id, level } = args
-      if (!id || (level !== 'global' && level !== 'project')) return { ok: false, error: '缺少 id 或 level' }
-      if (!(await entryExists(id, level))) return { ok: false, error: '未找到条目 ' + id }
-      const abs = level === 'global' ? p.globalPatch : p.projectPatch
-      return withWriteLock(async () => {
-        let c = await readPatch(abs)
-        c = removeMarked(c, id, 'enable')
-        c = appendBlock(c, buildDisableBlock(id, true))
-        await writePatch(abs, c)
-        const warnings: string[] = []
-        if (pluginInventory) {
-          const off = await waitFor(async () => {
-            const e = await liveEntry(id)
-            return e ? e.enabled === false : false
-          }, 5000, 300)
-          if (!off) warnings.push('loader 未在 5 秒内停用该服务')
-        }
-        await wait(1000)
-        c = await readPatch(abs)
-        c = removeMarked(c, id, 'disable')
-        await writePatch(abs, c)
-        if (pluginInventory) {
-          const on = await waitFor(async () => {
-            const e = await liveEntry(id)
-            return e ? e.enabled === true : false
-          }, 5000, 300)
-          if (!on) warnings.push('loader 未在 5 秒内重新启用该服务')
-        } else await wait(1500)
-        return warnings.length ? { ok: true, warning: warnings.join('；') } : { ok: true }
-      })
-    }
-
-    async function mcpmRemove(args: any): Promise<any> {
-      const p = await ensurePaths()
-      const { id, level } = args
-      if (!id || (level !== 'global' && level !== 'project')) return { ok: false, error: '缺少 id 或 level' }
-      const abs = level === 'global' ? p.globalPatch : p.projectPatch
-      return withWriteLock(async () => {
-        let c = await readPatch(abs)
-        c = removeEntryAll(c, id)
-        await writePatch(abs, c)
-        return { ok: true }
-      })
-    }
-
-    async function mcpmExport(): Promise<any> {
-      const p = await ensurePaths()
-      const list = await mcpmList()
-      const rows = (list.rows || []).filter((r: any) => r.level !== 'loader').map((r: any) => ({
+  async function mcpmExport() {
+    const list = await mcpmList()
+    const rows = (list.rows || [])
+      .filter((r: any) => r.level === 'profile' && !r.readOnly)
+      .map((r: any) => ({
         id: r.id,
         serverName: r.serverName,
         transport: r.transport,
@@ -1134,242 +1544,263 @@ export default {
         args: r.args || undefined,
         env: r.env || undefined,
         headers: r.headers || undefined,
-        level: r.level,
+        cwd: r.cwd || undefined,
+        toolCallTimeoutMs: r.toolCallTimeoutMs || undefined,
+        failOnStartupError: r.failOnStartupError || undefined,
+        maxInstructionBytes: r.maxInstructionBytes || undefined,
+        reconnect: r.reconnect || undefined,
+        level: 'profile',
         disabled: r.disabled,
       }))
-      const json = JSON.stringify({ exportedAt: new Date().toISOString(), rows }, null, 2)
-      let savedTo: string | null = null
-      try {
-        const abs = p.home + (p.home.indexOf('\\') >= 0 ? '\\' : '/') + 'mcp-manager-export.json'
-        await writePatch(abs, json)
-        savedTo = abs
-      } catch (e) { /* non-fatal */ }
-      return { ok: true, json, savedTo }
+    const json = JSON.stringify({ exportedAt: new Date().toISOString(), version: pkgVersion, rows }, null, 2)
+    let savedTo: string | null = null
+    try {
+      const p = await paths()
+      savedTo = join(p.home, 'mcp-manager-export.json')
+      await writePatch(savedTo, json)
+    } catch {
+      /* non-fatal */
     }
+    return { ok: true, json, savedTo }
+  }
 
-    async function mcpmImport(args: any): Promise<any> {
-      const p = await ensurePaths()
-      let parsed: any = null
-      try { parsed = JSON.parse(String(args.json || '')) } catch (e) { return { ok: false, error: 'JSON 解析失败: ' + message(e) } }
-      const entries = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.rows) ? parsed.rows : null)
-      if (!entries) return { ok: false, error: '导入内容格式不正确：需要数组或 { rows: [...] }' }
-      const added: string[] = []
-      const skipped: Array<{ id: string; reason: string }> = []
-      for (const item of entries) {
-        const norm = normalizeImportItem(item)
-        if (!norm.ok) { skipped.push({ id: (item && (item.id || item.serverName)) || '?', reason: norm.error }); continue }
-        const row = norm.row
-        // Existence checks run INSIDE the write lock so two concurrent imports
-        // (or an import racing an add) cannot both pass the same-id/same-name
-        // check and duplicate rows (TOCTOU).
-        const res = await withWriteLock(async () => {
-          const existing = await collectAll()
-          if (existing.ids.has(row.id)) return { skipped: true, reason: 'id 已存在' }
-          if (existing.serverNames.has(row.serverName)) return { skipped: true, reason: 'serverName 已存在' }
-          const abs = row.level === 'global' ? p.globalPatch : p.projectPatch
-          let c = await readPatch(abs)
-          c = appendBlock(c, buildInsertBlock(row))
-          if (row.disabled) c = appendBlock(c, buildDisableBlock(row.id, true))
-          await writePatch(abs, c)
-          return { added: true }
-        })
-        if (res.added) added.push(row.id)
-        else skipped.push({ id: row.id, reason: (res && res.reason) || '写入失败' })
+  async function mcpmImport(args: Record<string, any>) {
+    let parsed: any
+    try {
+      parsed = JSON.parse(String(args.json || ''))
+    } catch (e) {
+      return { ok: false, error: 'invalid JSON: ' + message(e) }
+    }
+    const entries = Array.isArray(parsed) ? parsed : parsed && Array.isArray(parsed.rows) ? parsed.rows : null
+    if (!entries) return { ok: false, error: 'expected an array or { rows: [...] }' }
+    const added: string[] = []
+    const skipped: Array<{ id: string; reason: string }> = []
+    for (const item of entries) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        skipped.push({ id: '?', reason: 'entry is not an object' })
+        continue
       }
-      return { ok: true, added, skipped }
-    }
-
-    function parseKv(text: string): Record<string, string> {
-      const out: Record<string, string> = {}
-      String(text || '').split(/\r?\n/).forEach((line) => {
-        const t = line.trim()
-        if (!t || t.startsWith('#')) return
-        const i = t.indexOf('=')
-        if (i <= 0) return
-        out[t.slice(0, i).trim()] = t.slice(i + 1).trim()
-      })
-      return out
-    }
-    function parseArgs(text: string): string[] {
-      return String(text || '').split(/[\s,]+/).map((s) => s.trim()).filter((s) => s !== '')
-    }
-
-    const handlers: Record<string, (args: any) => Promise<any>> = {
-      'plugin-version': pluginVersion,
-      'mcpm-list': mcpmList,
-      'mcpm-tools': mcpmTools,
-      'mcpm-add': mcpmAdd,
-      'mcpm-edit': mcpmEdit,
-      'mcpm-set-enabled': mcpmSetEnabled,
-      'mcpm-restart': mcpmRestart,
-      'mcpm-remove': mcpmRemove,
-      'mcpm-export': mcpmExport,
-      'mcpm-import': mcpmImport,
-      'skill-list': skillList,
-      'skill-toggle': skillToggle,
-    }
-
-    // ---------- agent-facing tools (standard ctx.tools.register + defineTool) ----------
-    const text = (value: string) => [{ type: 'text' as const, text: value }]
-    tools.register(defineTool({
-      name: 'mcp_manager_list',
-      description: 'List all configured MCP servers (level, enabled state, live loader status, registered tool count).',
-      parameters: {},
-      output: { schema: { type: 'string' }, render: (_a, v) => text(v) },
-      async execute() {
-        const r = await mcpmList()
-        if (!r.ok) throw new Error(r.error)
-        const summary = (r.rows || []).map((x: any) => (
-          x.id + ' | ' + x.serverName + ' | ' + x.level + ' | ' + (x.disabled ? 'disabled' : 'enabled') +
-          (x.live ? ' | loader:' + (x.live.enabled ? 'on' : 'off') + (x.live.phase ? ':' + x.live.phase : '') : '') +
-          (typeof x.toolCount === 'number' ? ' | tools:' + x.toolCount : '')
-        ))
-        return 'MCP servers:\n' + (summary.join('\n') || '(none)')
-      },
-    }))
-    tools.register(defineTool({
-      name: 'mcp_manager_set_enabled',
-      description: 'Enable or disable one configured MCP server (writes the patch file; takes effect via HMR).',
-      parameters: {
-        id: { type: 'string', required: true, description: 'Entry id of the MCP server, e.g. mcp-stepfun-web-search.' },
-        level: { type: 'string', required: true, description: 'project or global.' },
-        enabled: { type: 'boolean', required: true, description: 'true to enable, false to disable.' },
-      },
-      output: { schema: { type: 'string' }, render: (_a, v) => text(v) },
-      async execute(args) {
-        const r = await mcpmSetEnabled({ id: args.id, level: args.level, enabled: args.enabled })
-        if (!r.ok) throw new Error(r.error)
-        return 'OK: ' + args.id + ' now ' + (args.enabled ? 'enabled' : 'disabled')
-      },
-    }))
-    tools.register(defineTool({
-      name: 'mcp_manager_restart',
-      description: 'Restart one configured MCP server (disable + re-enable; reconnect and re-sync tools).',
-      parameters: {
-        id: { type: 'string', required: true, description: 'Entry id of the MCP server, e.g. mcp-stepfun-web-search.' },
-        level: { type: 'string', required: true, description: 'project or global.' },
-      },
-      output: { schema: { type: 'string' }, render: (_a, v) => text(v) },
-      async execute(args) {
-        const r = await mcpmRestart({ id: args.id, level: args.level })
-        if (!r.ok) throw new Error(r.error)
-        return 'OK: ' + args.id + ' restarted'
-      },
-    }))
-    tools.register(defineTool({
-      name: 'mcp_manager_add',
-      description: 'Add a new MCP server (streamable-http or stdio) at project or global level.',
-      parameters: {
-        serverName: { type: 'string', required: true, description: 'Unique server name (1-32 chars, [A-Za-z0-9_-]).' },
-        transport: { type: 'string', required: true, description: 'streamable-http or stdio.' },
-        url: { type: 'string', description: 'Server URL (required for streamable-http).' },
-        command: { type: 'string', description: 'Executable (required for stdio).' },
-        args: { type: 'string', description: 'Arguments, space separated (stdio).' },
-        headers: { type: 'string', description: 'Extra headers as key=value lines (streamable-http).' },
-        env: { type: 'string', description: 'Extra env vars as key=value lines (stdio).' },
-        level: { type: 'string', description: 'project or global (default project).' },
-      },
-      output: { schema: { type: 'string' }, render: (_a, v) => text(v) },
-      async execute(args) {
-        const r = await mcpmAdd(args)
-        if (!r.ok) throw new Error(r.error)
-        return 'OK: added ' + r.row.id + ' at ' + r.row.level
-      },
-    }))
-
-    // ---------- HTTP API route (UI half), registered defensively ----------
-    if (webServer) {
-      // Cap request bodies (1 MiB) — the API has no legitimate large payloads,
-      // and unbounded buffering would let a local attacker exhaust memory.
-      const MAX_BODY = 1024 * 1024
-      const readBody = (req: HttpReq) => new Promise<string>((resolve, reject) => {
-        const chunks: string[] = []
-        let size = 0
-        req.on('data', (c) => {
-          const s = String(c)
-          size += s.length
-          if (size > MAX_BODY) { reject(new Error('request body too large')); return }
-          chunks.push(s)
-        })
-        req.on('end', () => resolve(chunks.join('')))
-        req.on('error', reject)
-      })
+      const input = item as Record<string, any>
+      if (input.level === 'global' || input.level === 'home') {
+        skipped.push({ id: String(input.id || input.serverName || '?'), reason: 'home-layer rows are read-only; import targets the current profile' })
+        continue
+      }
+      let config: Record<string, any>
       try {
-        // ctx.effect wires the route's disposer into this plugin's scope, so an
-        // unload (HMR removal, disable, update) unregisters the route — the
-        // documented cleanup contract (webServer.register does not auto-scope).
-        ctx.effect(() => webServer.register({
-          kind: 'exact',
-          path: '/dsh-mcp-manager/api',
-          handler: async (req, res) => {
-            // Cross-site (CSRF) gate. This route mutates config files, so it
-            // must only be reachable from the DSH web UI (same origin) or
-            // local tooling. A browser cross-site request cannot attach a
-            // custom header without a CORS preflight, and this route never
-            // answers preflights — requiring `x-dsh-plugin` is the primary
-            // gate; POST-only and the Origin check are defense in depth.
-            const hdr = (name: string): string => {
-              const v = req.headers?.[name]
-              return Array.isArray(v) ? v[0] ?? '' : v ?? ''
-            }
-            if (String(req.method || 'POST').toUpperCase() !== 'POST') {
-              res.writeHead(405, { 'content-type': 'application/json' })
-              res.end(JSON.stringify({ ok: false, error: 'method not allowed' }))
-              return
-            }
-            if (hdr('x-dsh-plugin') !== 'dsh-mcp-manager') {
-              res.writeHead(403, { 'content-type': 'application/json' })
-              res.end(JSON.stringify({ ok: false, error: 'missing plugin gate header' }))
-              return
-            }
-            const origin = hdr('origin')
-            if (origin) {
-              let sameOrigin = false
-              try {
-                const u = new URL(origin)
-                const hostHdr = hdr('host') || ''
-                sameOrigin =
-                  /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(u.hostname) || u.host === hostHdr
-              } catch (e) { /* unparseable origin → rejected below */ }
-              if (!sameOrigin) {
-                res.writeHead(403, { 'content-type': 'application/json' })
-                res.end(JSON.stringify({ ok: false, error: 'cross-origin request rejected' }))
-                return
-              }
-            }
-            res.writeHead(200, { 'content-type': 'application/json' })
-            try {
-              let payload: any = {}
-              try {
-                payload = JSON.parse((await readBody(req)) || '{}')
-              } catch (e) {
-                if (String((e as Error)?.message).includes('body too large')) {
-                  res.end(JSON.stringify({ ok: false, error: '请求体过大' }))
-                  return
-                }
-                /* otherwise fall through with {} */
-              }
-              const op = String(payload.op || '')
-              if (TOKEN && WRITE_OPS.has(op) && hdr('x-dsh-token') !== TOKEN) {
-                res.end(JSON.stringify({ ok: false, error: '缺少或错误的访问令牌（x-dsh-token）' }))
-                return
-              }
-              const fn = handlers[op]
-              if (!fn) {
-                res.end(JSON.stringify({ ok: false, error: '未知操作: ' + op }))
-                return
-              }
-              const result = await fn(payload.args || {})
-              res.end(JSON.stringify(result === undefined ? { ok: true } : result))
-            } catch (e) {
-              res.end(JSON.stringify({ ok: false, error: message(e) }))
-            }
-          },
-        }), 'dsh-mcp-manager: api route')
+        config = normalizeMcpConfig(input)
       } catch (e) {
-        // A registration failure must never take down the whole entry: log and continue.
-        console.error('[dsh-mcp-manager] webServer route registration failed:', message(e))
+        skipped.push({ id: String(input.id || input.serverName || '?'), reason: message(e) })
+        continue
       }
+      let row: { added?: string; skipped?: boolean; reason?: string }
+      try {
+        row = await withWriteLock(async () => {
+          const collected = await collectRows()
+          if (collected.rows.some((r) => r.serverName === config.serverName)) return { skipped: true, reason: 'serverName already exists' }
+          const requested = String(input.id || '').trim()
+          const id = requested && !collected.rows.some((r) => r.id === requested) ? requested : await nextId(String(config.serverName), collected.rows)
+          const abs = await profilePatch()
+          const before = await readPatch(abs)
+          const doc = loadDoc(before)
+          upsertInDoc(doc, id, config)
+          if (input.disabled === true || input.enabled === false) setDisabledInDoc(doc, id, true)
+          await writePatch(abs, String(doc))
+          return { added: id }
+        })
+      } catch (e) {
+        skipped.push({ id: String(input.id || input.serverName || '?'), reason: message(e) })
+        continue
+      }
+      if (row.added) added.push(row.added)
+      else skipped.push({ id: String(input.id || input.serverName || '?'), reason: row.reason || 'write failed' })
     }
-  },
+    return { ok: true, added, skipped }
+  }
+
+  async function pluginVersion() {
+    return { ok: true, version: pkgVersion }
+  }
+
+  const handlers: Record<string, (args: any) => Promise<any>> = {
+    'plugin-version': pluginVersion,
+    'mcpm-list': mcpmList,
+    'mcpm-tools': mcpmTools,
+    'mcpm-add': mcpmAdd,
+    'mcpm-edit': mcpmEdit,
+    'mcpm-set-enabled': mcpmSetEnabled,
+    'mcpm-restart': mcpmRestart,
+    'mcpm-remove': mcpmRemove,
+    'mcpm-export': mcpmExport,
+    'mcpm-import': mcpmImport,
+    'skill-list': skillList,
+    'skill-toggle': skillToggle,
+  }
+
+  // ---------- model-facing tools ----------
+  const text = (value: string) => [{ type: 'text' as const, text: value }]
+
+  ctx.effect(() => tools.register(defineTool({
+    name: 'mcp_manager_list',
+    description: 'List MCP servers in the current profile and the read-only home layer, with enabled state, live loader phase, and registered tool count.',
+    parameters: {},
+    output: { schema: { type: 'string' }, render: (_a, value) => text(value) },
+    async execute() {
+      const result = await mcpmList()
+      if (!result.ok) throw new Error(result.errors.join('; ') || 'failed to list MCP servers')
+      const summary = result.rows.map((row: any) => (
+        `${row.id} | ${row.serverName} | ${row.level}${row.readOnly ? '(read-only)' : ''} | ${row.disabled ? 'disabled' : 'enabled'}` +
+        (row.live ? ` | loader:${row.live.enabled ? 'on' : 'off'}${row.live.phase ? ':' + row.live.phase : ''}` : '') +
+        (typeof row.toolCount === 'number' ? ` | tools:${row.toolCount}` : '')
+      ))
+      return 'MCP servers:\n' + (summary.join('\n') || '(none)')
+    },
+  })))
+
+  ctx.effect(() => tools.register(defineTool({
+    name: 'mcp_manager_set_enabled',
+    description: 'Enable or disable one MCP server managed in the current profile. Rows owned by the home layer or another bundle are read-only.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Entry id of the MCP server, e.g. mcp-stepfun-web-search.' },
+      enabled: { type: 'boolean', required: true, description: 'true to enable, false to disable.' },
+    },
+    output: { schema: { type: 'string' }, render: (_a, value) => text(value) },
+    async execute(args) {
+      const result: any = await mcpmSetEnabled({ id: args.id, enabled: args.enabled })
+      if (!result.ok) throw new Error(result.error)
+      return 'OK: ' + args.id + ' now ' + (args.enabled ? 'enabled' : 'disabled')
+    },
+  })))
+
+  ctx.effect(() => tools.register(defineTool({
+    name: 'mcp_manager_restart',
+    description: 'Restart one MCP server managed in the current profile (disconnect and reconnect, then re-sync its tools). Home-layer rows are read-only.',
+    parameters: {
+      id: { type: 'string', required: true, description: 'Entry id of the MCP server.' },
+    },
+    output: { schema: { type: 'string' }, render: (_a, value) => text(value) },
+    async execute(args) {
+      const result: any = await mcpmRestart({ id: args.id })
+      if (!result.ok) throw new Error(result.error)
+      return 'OK: ' + args.id + ' restarted' + (result.warning ? ' (' + result.warning + ')' : '')
+    },
+  })))
+
+  ctx.effect(() => tools.register(defineTool({
+    name: 'mcp_manager_add',
+    description: 'Add a new MCP server (streamable-http or stdio) to the current profile.',
+    parameters: {
+      serverName: { type: 'string', required: true, description: 'Unique server name (1-32 chars, [A-Za-z0-9_-]).' },
+      transport: { type: 'string', required: true, description: 'streamable-http or stdio.' },
+      url: { type: 'string', description: 'Server URL (required for streamable-http).' },
+      command: { type: 'string', description: 'Executable (required for stdio).' },
+      args: { type: 'string', description: 'Arguments separated by newlines (stdio).' },
+      headers: { type: 'string', description: 'Extra headers as key=value lines (streamable-http).' },
+      env: { type: 'string', description: 'Extra env vars as key=value lines (stdio).' },
+      cwd: { type: 'string', description: 'Working directory for a stdio server.' },
+      toolCallTimeoutMs: { type: 'number', description: 'Per-call timeout in ms (default 60000).' },
+      failOnStartupError: { type: 'boolean', description: 'Reject activation when the initial connection fails.' },
+    },
+    output: { schema: { type: 'string' }, render: (_a, value) => text(value) },
+    async execute(args) {
+      const result: any = await mcpmAdd(args)
+      if (!result.ok) throw new Error(result.error)
+      return 'OK: added ' + result.row.id
+    },
+  })))
+
+  // ---------- HTTP API (client half) ----------
+  ctx.inject(['webServer'], (child: any) => {
+    const server = child.get('webServer') as WebServerService | undefined
+    if (!server) return
+    child.effect(() => server.register({
+      kind: 'exact',
+      path: '/dsh-mcp-manager/api',
+      handler: async (req, res) => {
+        const header = (key: string): string => {
+          const value = req.headers?.[key]
+          return Array.isArray(value) ? value[0] ?? '' : value ?? ''
+        }
+        if (String(req.method || 'POST').toUpperCase() !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'method not allowed' }))
+          return
+        }
+        if (header('x-dsh-plugin') !== 'dsh-mcp-manager') {
+          res.writeHead(403, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: 'missing plugin gate header' }))
+          return
+        }
+        const origin = header('origin')
+        if (origin) {
+          const isLoopback = (host: string) => /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(host)
+          let sameOrigin = false
+          try {
+            const actual = new URL(origin)
+            const expected = typeof server.getOrigin === 'function' ? server.getOrigin() : ''
+            if (expected) {
+              const want = new URL(expected)
+              sameOrigin = actual.origin === want.origin
+                || (actual.protocol === want.protocol && actual.port === want.port && isLoopback(actual.hostname) && isLoopback(want.hostname))
+            } else {
+              sameOrigin = isLoopback(actual.hostname) || actual.host === header('host')
+            }
+          } catch {
+            /* unparseable origin */
+          }
+          if (!sameOrigin) {
+            res.writeHead(403, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, error: 'cross-origin request rejected' }))
+            return
+          }
+        }
+
+        const readBody = () => new Promise<string>((resolve, reject) => {
+          const chunks: string[] = []
+          let size = 0
+          req.on('data', (chunk) => {
+            const value = String(chunk ?? '')
+            size += Buffer.byteLength(value, 'utf8')
+            if (size > MAX_BODY) {
+              reject(new Error('request body too large'))
+              return
+            }
+            chunks.push(value)
+          })
+          req.on('end', () => resolve(chunks.join('')))
+          req.on('error', reject)
+        })
+
+        res.writeHead(200, { 'content-type': 'application/json' })
+        try {
+          let payload: any = {}
+          try {
+            payload = JSON.parse((await readBody()) || '{}')
+          } catch (e) {
+            if (String((e as Error)?.message).includes('body too large')) {
+              res.end(JSON.stringify({ ok: false, error: '请求体过大' }))
+              return
+            }
+            /* malformed JSON → empty payload, reported as unknown op */
+          }
+          const op = String(payload.op || '')
+          if (TOKEN && WRITE_OPS.has(op) && header('x-dsh-token') !== TOKEN) {
+            res.end(JSON.stringify({ ok: false, error: 'missing or invalid access token (x-dsh-token)' }))
+            return
+          }
+          const fn = handlers[op]
+          if (!fn) {
+            res.end(JSON.stringify({ ok: false, error: 'unknown op: ' + op }))
+            return
+          }
+          const result = await fn(payload.args || {})
+          res.end(JSON.stringify(result === undefined ? { ok: true } : result))
+        } catch (e) {
+          res.end(JSON.stringify({ ok: false, error: message(e) }))
+        }
+      },
+    }), 'dsh-mcp-manager: api route')
+  })
+
+  // The client half registers under the package name only; no second module id
+  // is emitted, matching `dsh-client-modules`' package-name attachment.
 }

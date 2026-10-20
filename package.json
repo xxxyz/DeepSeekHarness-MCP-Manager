@@ -1,24 +1,28 @@
 {
   "name": "@xxxyz/dsh-mcp-manager",
-  "version": "2.2.7",
-  "description": "DSH-standard MCP manager plugin: Settings UI + HTTP API + model-facing mcp_manager_* tools. Install with one command: dsh plugin --profile web add @xxxyz/dsh-mcp-manager@latest",
+  "version": "3.0.0",
+  "description": "MCP server and skill manager for DeepSeek Harness (DSH 0.2.x): Settings pages, a same-origin HTTP API, and model-facing mcp_manager_* tools.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
     "cordis.patch.yml",
-    "show.png",
+    "locale/*.json",
+    "icon.svg",
     "README.md",
     "README_EN.md",
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20",
+    "dsh": ">=0.2.1-rc.2 <0.3.0"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org",
@@ -27,7 +31,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "npm test",
     "lint": "node --check lib/client.js && node --check lib/index.js"
   },
   "keywords": [
@@ -35,6 +39,7 @@
     "deepseek-harness",
     "mcp",
     "mcp-server",
+    "skill",
     "plugin",
     "cordis"
   ],
@@ -53,21 +58,31 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-api-remotes"
+        "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
   },
-  "peerDependencies": {
-    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1",
-    "react": "^18.2.0"
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.5",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1",
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-agent": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-ptc-runtime": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-sandbox": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-sandbox-policy": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-scope": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-user-approval": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-working-directory": "0.2.1-rc.2",
     "@types/node": "^24.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "^6.0.0"
   },
   "license": "MIT"
