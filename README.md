@@ -94,7 +94,7 @@ dsh plugin --profile desktop add @xxxyz/dsh-mcp-manager@latest
 | 切换/重启返回 `unaddressable` 或 `management-required` | 该行来自 bundle 或聚合层，DSH 不允许经 profile patch 修改；页面按只读展示。 |
 | 页面里有一行标记“全局 home（只读）” | 该行来自 `~/.dsh/cordis.patch.yml`，优先级高于 profile。管理器只展示、不修改；要编辑请在该 profile 新增一份。 |
 | `pluginManager` 报某行 “did not activate” | MCP 服务器本身连接失败（URL / 命令 / 凭证 / 网络）。查看该行 `loader: failed` 提示并检查服务端。 |
-| 之前用旧方式装过，现在想升级 | 先 `dsh plugin --profile <profile> remove @xxxyz/dsh-mcp-manager`，再安装 3.0.0；新版 bundle 自带防双挂载 guard。 |
+| 之前用旧方式装过，现在想升级 | 先 `dsh plugin --profile <profile> remove @xxxyz/dsh-mcp-manager`，再安装最新版；新版 bundle 自带防双挂载 guard。 |
 | 提示 `dsh: command not found` | 先安装 DSH；或直接用 `npx -y --package @deepseek-ai/dsh dsh plugin --profile desktop add @xxxyz/dsh-mcp-manager@latest`。 |
 | `npm view` 报 404 | 国内镜像（npmmirror）同步有延迟：加 `--registry=https://registry.npmjs.org` 或稍等再试。 |
 | 修改配置后未生效 | 当前 profile 的写入由 HMR 热应用；等待 1–2 秒。不可寻址的 bundle 行需要重启。 |

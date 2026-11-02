@@ -86,7 +86,7 @@ You can also raise the version in `~/.dsh/profiles/<profile>/package.json` and r
 | Enable/restart says `unaddressable` or `management-required` | The row comes from a bundle or aggregate layer that DSH does not address through the profile patch; the page shows it read-only. |
 | A row is tagged “Global home (read-only)” | The row comes from `~/.dsh/cordis.patch.yml`, which outranks the profile. The manager only displays it; add a copy in the current profile to edit it. |
 | `pluginManager` reports “did not activate” | The MCP server itself failed to connect (URL, command, credentials, network). Check the `loader: failed` hint and the server. |
-| Upgrading from an older install | Remove the old package, then install 3.0.0. The bundle keeps its double-mount guard. |
+| Upgrading from an older install | Remove the old package, then install the latest version. The bundle keeps its double-mount guard. |
 | `dsh: command not found` | Install DSH first, or use `npx -y --package @deepseek-ai/dsh dsh plugin --profile desktop add @xxxyz/dsh-mcp-manager@latest`. |
 
 </details>

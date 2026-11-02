@@ -1,6 +1,6 @@
 {
   "name": "@xxxyz/dsh-mcp-manager",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "MCP server and skill manager for DeepSeek Harness (DSH 0.2.x): Settings pages, a same-origin HTTP API, and model-facing mcp_manager_* tools.",
   "type": "module",
   "main": "lib/index.js",
