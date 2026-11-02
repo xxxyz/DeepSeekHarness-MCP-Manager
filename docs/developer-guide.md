@@ -1,6 +1,6 @@
 # dsh-mcp-manager 开发文档
 
-本仓库的开发 / 调试 / 发布指南，面向 DSH **0.2.1-rc.2** 的插件契约。需要改动源码或排查挂载问题的人从这里开始。
+本仓库的开发 / 调试 / 发布指南，面向 DSH **0.2.1-rc.2 ~ 0.2.1-rc.5** 的插件契约。需要改动源码或排查挂载问题的人从这里开始。
 
 ## 一、项目概览
 
@@ -189,7 +189,7 @@ npm publish --registry=https://registry.npmjs.org
 - 本机 profile 若用 link/tarball，改回 registry 版本再 `pnpm install`。
 - `pnpm 11 minimumReleaseAge` 可能让 `@latest` 静默回退到旧版本；把新版本加入 `~/.dsh/profiles/<profile>/pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`（带版本号的 OR 范围）。
 - pnpm packument 缓存可能保留旧 dist-tags；删除 `%LOCALAPPDATA%\pnpm-cache\...\@xxxyz\dsh-mcp-manager.jsonl` 再试。
-- 版本要求：`engines.dsh = ">=0.2.1-rc.2 <0.3.0"`；不要把 `engines.dsh` 去掉后只留 `peerDependencies` 的旧范围，否则 DSH 0.2.1 会判定不兼容。
+- 版本要求：`engines.dsh = ">=0.2.1-rc.2 <0.3.0"`；不要把 `engines.dsh` 去掉后只留 `peerDependencies` 的旧范围，否则 DSH 0.2.1 会判定不兼容。该范围已覆盖并实测 `0.2.1-rc.5`。
 
 ## 九、维护注意
 

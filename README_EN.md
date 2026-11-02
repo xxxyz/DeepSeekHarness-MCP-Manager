@@ -73,7 +73,7 @@ dsh plugin --profile desktop add @xxxyz/dsh-mcp-manager@latest
 
 You can also raise the version in `~/.dsh/profiles/<profile>/package.json` and run `pnpm install`, then hard-refresh.
 
-> **Version requirement**: this package declares `engines.dsh = ">=0.2.1-rc.2 <0.3.0"`. Older DSH releases (0.1.x) refuse to mount it; 0.3+ needs an upgrade against the new contract.
+> **Version requirement**: this package declares `engines.dsh = ">=0.2.1-rc.2 <0.3.0"`. Older DSH releases (0.1.x) refuse to mount it; 0.3+ needs an upgrade against the new contract. Re-tested on **DSH 0.2.1-rc.5**; the range is unchanged.
 
 <details>
 <summary><b>FAQ</b></summary>

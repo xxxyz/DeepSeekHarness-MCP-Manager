@@ -81,7 +81,7 @@ dsh plugin --profile desktop add @xxxyz/dsh-mcp-manager@latest
 
 也可把 `~/.dsh/profiles/<profile>/package.json` 里的版本号改高后 `pnpm install`。改完**硬刷新浏览器**（Cmd/Ctrl+Shift+R）即可（client 改动无需重启 DSH）。
 
-> **版本要求**：本包声明 `engines.dsh = ">=0.2.1-rc.2 <0.3.0"`。在更旧的 DSH（如 0.1.x）上会被启动检查拒绝挂载；在 0.3+ 上需要按新契约升级。
+> **版本要求**：本包声明 `engines.dsh = ">=0.2.1-rc.2 <0.3.0"`。在更旧的 DSH（如 0.1.x）上会被启动检查拒绝挂载；在 0.3+ 上需要按新契约升级。已在 **DSH 0.2.1-rc.5** 上复测，范围无需调整。
 
 <details>
 <summary><b>常见问题</b></summary>
